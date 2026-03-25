@@ -54,9 +54,10 @@ class DeliveryTarget:
         - "telegram" → Telegram home channel
         - "telegram:123456" → specific Telegram chat
         """
-        target = target.strip().lower()
-        
-        if target == "origin":
+        stripped = target.strip()
+        lowered = stripped.lower()
+
+        if lowered == "origin":
             if origin:
                 return cls(
                     platform=origin.platform,
@@ -67,23 +68,25 @@ class DeliveryTarget:
             else:
                 # Fallback to local if no origin
                 return cls(platform=Platform.LOCAL, is_origin=True)
-        
-        if target == "local":
+
+        if lowered == "local":
             return cls(platform=Platform.LOCAL)
-        
-        # Check for platform:chat_id format
-        if ":" in target:
-            platform_str, chat_id = target.split(":", 1)
+
+        # Check for platform:chat_id format — lowercase only the platform prefix,
+        # preserve the chat_id's original case (Matrix room IDs, WhatsApp group
+        # IDs, and similar identifiers can be case-sensitive).
+        if ":" in stripped:
+            platform_str, chat_id = stripped.split(":", 1)
             try:
-                platform = Platform(platform_str)
+                platform = Platform(platform_str.lower())
                 return cls(platform=platform, chat_id=chat_id, is_explicit=True)
             except ValueError:
                 # Unknown platform, treat as local
                 return cls(platform=Platform.LOCAL)
-        
+
         # Just a platform name (use home channel)
         try:
-            platform = Platform(target)
+            platform = Platform(lowered)
             return cls(platform=platform)
         except ValueError:
             # Unknown platform, treat as local
