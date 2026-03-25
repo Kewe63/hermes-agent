@@ -106,7 +106,7 @@ hermes chat -q "Hello"
 ### Run tests
 
 ```bash
-pytest tests/ -v
+pytest tests/ -v --ignore=tests/integration
 ```
 
 ---
