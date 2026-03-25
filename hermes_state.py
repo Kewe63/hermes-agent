@@ -861,9 +861,11 @@ class SessionDB:
                 return []
             matches = [dict(row) for row in cursor.fetchall()]
 
-            # Add surrounding context (1 message before + after each match)
-            for match in matches:
-                try:
+        # Add surrounding context (1 message before + after each match).
+        # Done outside the lock so we don't hold it across N sequential queries.
+        for match in matches:
+            try:
+                with self._lock:
                     ctx_cursor = self._conn.execute(
                         """SELECT role, content FROM messages
                            WHERE session_id = ? AND id >= ? - 1 AND id <= ? + 1
@@ -874,9 +876,9 @@ class SessionDB:
                         {"role": r["role"], "content": (r["content"] or "")[:200]}
                         for r in ctx_cursor.fetchall()
                     ]
-                    match["context"] = context_msgs
-                except Exception:
-                    match["context"] = []
+                match["context"] = context_msgs
+            except Exception:
+                match["context"] = []
 
         # Remove full content from result (snippet is enough, saves tokens)
         for match in matches:
