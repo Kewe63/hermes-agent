@@ -16,11 +16,34 @@ import re
 import threading
 import uuid
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
+
+
+def _now() -> datetime:
+    """Return the current UTC time as a timezone-aware datetime.
+
+    Using UTC throughout avoids DST ambiguity: a session created before a
+    clock-forward transition is compared against the same wall-clock reference
+    after the transition, so idle/daily reset deadlines are always accurate.
+    """
+    return datetime.now(timezone.utc)
+
+
+def _parse_dt(value: str) -> datetime:
+    """Parse an ISO-format datetime string and ensure it is UTC-aware.
+
+    Legacy sessions.json entries were written with naive datetimes (no tzinfo).
+    Those are assumed to be UTC and tagged accordingly so they can be safely
+    compared against _now() which is always timezone-aware.
+    """
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 # ---------------------------------------------------------------------------
@@ -397,8 +420,8 @@ class SessionEntry:
         return cls(
             session_key=data["session_key"],
             session_id=data["session_id"],
-            created_at=datetime.fromisoformat(data["created_at"]),
-            updated_at=datetime.fromisoformat(data["updated_at"]),
+            created_at=_parse_dt(data["created_at"]),
+            updated_at=_parse_dt(data["updated_at"]),
             origin=origin,
             display_name=data.get("display_name"),
             platform=platform,
@@ -563,7 +586,7 @@ class SessionStore:
         if policy.mode == "none":
             return False
 
-        now = datetime.now()
+        now = _now()
 
         if policy.mode in ("idle", "both"):
             idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
@@ -604,7 +627,7 @@ class SessionStore:
         if policy.mode == "none":
             return None
         
-        now = datetime.now()
+        now = _now()
         
         if policy.mode in ("idle", "both"):
             idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
@@ -660,7 +683,7 @@ class SessionStore:
         Creates a session record in SQLite when a new session starts.
         """
         session_key = self._generate_session_key(source)
-        now = datetime.now()
+        now = _now()
 
         # SQLite calls are made outside the lock to avoid holding it during I/O.
         # All _entries / _loaded mutations are protected by self._lock.
@@ -756,7 +779,7 @@ class SessionStore:
 
             if session_key in self._entries:
                 entry = self._entries[session_key]
-                entry.updated_at = datetime.now()
+                entry.updated_at = _now()
                 entry.input_tokens += input_tokens
                 entry.output_tokens += output_tokens
                 entry.cache_read_tokens += cache_read_tokens
@@ -809,7 +832,7 @@ class SessionStore:
             old_entry = self._entries[session_key]
             db_end_session_id = old_entry.session_id
 
-            now = datetime.now()
+            now = _now()
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
             new_entry = SessionEntry(
@@ -870,7 +893,7 @@ class SessionStore:
 
             db_end_session_id = old_entry.session_id
 
-            now = datetime.now()
+            now = _now()
             new_entry = SessionEntry(
                 session_key=session_key,
                 session_id=target_session_id,
@@ -900,7 +923,7 @@ class SessionStore:
             entries = list(self._entries.values())
 
         if active_minutes is not None:
-            cutoff = datetime.now() - timedelta(minutes=active_minutes)
+            cutoff = _now() - timedelta(minutes=active_minutes)
             entries = [e for e in entries if e.updated_at >= cutoff]
 
         entries.sort(key=lambda e: e.updated_at, reverse=True)
