@@ -3840,11 +3840,16 @@ class HermesCLI:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
                 if qcmd.get("type") == "exec":
                     import subprocess
+                    import shlex
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
+                            # Parse into a list to avoid shell=True injection risk.
+                            # shell=True would allow a malicious config entry to run
+                            # arbitrary shell constructs (&&, |, $(...), etc.).
+                            exec_args = shlex.split(exec_cmd)
                             result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
+                                exec_args, shell=False, capture_output=True,
                                 text=True, timeout=30
                             )
                             output = result.stdout.strip() or result.stderr.strip()
@@ -3854,6 +3859,8 @@ class HermesCLI:
                                 self.console.print("[dim]Command returned no output[/]")
                         except subprocess.TimeoutExpired:
                             self.console.print("[bold red]Quick command timed out (30s)[/]")
+                        except ValueError as e:
+                            self.console.print(f"[bold red]Quick command parse error: {e}[/]")
                         except Exception as e:
                             self.console.print(f"[bold red]Quick command error: {e}[/]")
                     else:
