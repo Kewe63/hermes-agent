@@ -745,8 +745,8 @@ class SessionStore:
         output_tokens: int = 0,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
-        last_prompt_tokens: int = None,
-        model: str = None,
+        last_prompt_tokens: Optional[int] = None,
+        model: Optional[str] = None,
         estimated_cost_usd: Optional[float] = None,
         cost_status: Optional[str] = None,
         cost_source: Optional[str] = None,
@@ -944,8 +944,11 @@ class SessionStore:
         
         # Also write legacy JSONL (keeps existing tooling working during transition)
         transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(message, ensure_ascii=False) + "\n")
+        try:
+            with open(transcript_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(message, ensure_ascii=False) + "\n")
+        except OSError as e:
+            logger.warning("Failed to write to JSONL transcript %s: %s", session_id, e)
     
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
@@ -973,11 +976,25 @@ class SessionStore:
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
         
-        # JSONL: overwrite the file
+        # JSONL: overwrite the file atomically to prevent partial writes on error
         transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            for msg in messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        import tempfile
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(transcript_path.parent), suffix=".tmp", prefix=".transcript_"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                for msg in messages:
+                    f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, transcript_path)
+        except OSError as e:
+            logger.warning("Failed to rewrite JSONL transcript %s: %s", session_id, e)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript."""
