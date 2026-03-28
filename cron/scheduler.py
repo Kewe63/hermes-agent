@@ -185,9 +185,16 @@ def _deliver_result(job: dict, content: str) -> None:
         # fresh thread that has no running loop.
         coro.close()
         import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id))
-            result = future.result(timeout=30)
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id))
+                result = future.result(timeout=30)
+        except concurrent.futures.TimeoutError:
+            logger.error("Job '%s': delivery to %s:%s timed out after 30s", job["id"], platform_name, chat_id)
+            return
+        except Exception as e:
+            logger.error("Job '%s': delivery to %s:%s failed in thread: %s", job["id"], platform_name, chat_id, e)
+            return
     except Exception as e:
         logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)
         return
@@ -474,11 +481,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
-            except (Exception, KeyboardInterrupt) as e:
+            except BaseException as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)
             try:
                 _session_db.close()
-            except (Exception, KeyboardInterrupt) as e:
+            except BaseException as e:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
