@@ -3,7 +3,7 @@
 import socket
 from unittest.mock import patch
 
-from tools.url_safety import is_safe_url, _is_blocked_ip
+from tools.url_safety import async_is_safe_url, is_safe_url, _is_blocked_ip
 
 import ipaddress
 import pytest
@@ -151,6 +151,24 @@ class TestIsSafeUrl:
         ]):
             # 100.0.0.1 is a global IP, not in CGNAT range
             assert is_safe_url("http://legit-host.example/") is True
+
+
+class TestAsyncIsSafeUrl:
+    """async_is_safe_url must match is_safe_url (runs DNS in a thread pool)."""
+
+    @pytest.mark.asyncio
+    async def test_public_url_allowed(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert await async_is_safe_url("https://example.com/x") is True
+
+    @pytest.mark.asyncio
+    async def test_localhost_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("127.0.0.1", 0)),
+        ]):
+            assert await async_is_safe_url("http://localhost:8080/") is False
 
 
 class TestIsBlockedIp:

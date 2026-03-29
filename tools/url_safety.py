@@ -15,6 +15,7 @@ Limitations (documented, not fixable at pre-flight level):
     SDKs (Firecrawl/Tavily) where redirect handling is on their servers.
 """
 
+import asyncio
 import ipaddress
 import logging
 import socket
@@ -94,3 +95,12 @@ def is_safe_url(url: str) -> bool:
         # become SSRF bypass vectors
         logger.warning("Blocked request — URL safety check error for %s: %s", url, exc)
         return False
+
+
+async def async_is_safe_url(url: str) -> bool:
+    """Same rules as :func:`is_safe_url`, but run the DNS work off the event loop.
+
+    ``socket.getaddrinfo`` can block; call this from async code paths (gateway,
+    ``web_extract_tool``, vision download hooks) instead of ``is_safe_url``.
+    """
+    return await asyncio.to_thread(is_safe_url, url)

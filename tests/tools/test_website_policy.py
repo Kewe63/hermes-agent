@@ -346,7 +346,10 @@ async def test_web_extract_short_circuits_blocked_url(monkeypatch):
     from tools import web_tools
 
     # Allow test URLs past SSRF check so website policy is what gets tested
-    monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+    async def _allow_ssrf(_url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
     monkeypatch.setattr(
         web_tools,
         "check_website_access",
@@ -394,7 +397,10 @@ async def test_web_extract_blocks_redirected_final_url(monkeypatch):
     from tools import web_tools
 
     # Allow test URLs past SSRF check so website policy is what gets tested
-    monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+    async def _allow_ssrf(_url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
 
     def fake_check(url):
         if url == "https://allowed.test":
@@ -436,7 +442,10 @@ async def test_web_crawl_short_circuits_blocked_url(monkeypatch):
     # web_crawl_tool checks for Firecrawl env before website policy
     monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
     # Allow test URLs past SSRF check so website policy is what gets tested
-    monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+    async def _allow_ssrf(_url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
     monkeypatch.setattr(
         web_tools,
         "check_website_access",
@@ -467,7 +476,10 @@ async def test_web_crawl_blocks_redirected_final_url(monkeypatch):
     # web_crawl_tool checks for Firecrawl env before website policy
     monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
     # Allow test URLs past SSRF check so website policy is what gets tested
-    monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+    async def _allow_ssrf(_url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
 
     def fake_check(url):
         if url == "https://allowed.test":
