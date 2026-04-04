@@ -4242,8 +4242,10 @@ class HermesCLI:
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
+                            import shutil as _shutil
+                            _bash = _shutil.which("bash") or "/bin/bash"
                             result = subprocess.run(
-                                shlex.split(exec_cmd), capture_output=True,
+                                [_bash, "-c", exec_cmd], capture_output=True,
                                 text=True, timeout=30
                             )
                             output = result.stdout.strip() or result.stderr.strip()
