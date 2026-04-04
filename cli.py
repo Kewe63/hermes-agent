@@ -15,6 +15,7 @@ Usage:
 
 import logging
 import os
+import shlex
 import shutil
 import sys
 import json
@@ -4242,7 +4243,7 @@ class HermesCLI:
                     if exec_cmd:
                         try:
                             result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
+                                shlex.split(exec_cmd), capture_output=True,
                                 text=True, timeout=30
                             )
                             output = result.stdout.strip() or result.stderr.strip()
