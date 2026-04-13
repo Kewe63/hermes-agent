@@ -126,15 +126,7 @@ _approval_callback = None
 # ACP sessions register per-task callbacks here so that concurrent sessions
 # cannot overwrite each other's global _approval_callback.
 _task_approval_callbacks: dict = {}
-_task_approval_lock = None  # lazily initialised (threading.Lock)
-
-
-def _get_task_approval_lock():
-    global _task_approval_lock
-    if _task_approval_lock is None:
-        import threading
-        _task_approval_lock = threading.Lock()
-    return _task_approval_lock
+_task_approval_lock = threading.Lock()
 
 
 def set_sudo_password_callback(cb):
@@ -156,19 +148,19 @@ def register_task_approval_callback(task_id: str, cb) -> None:
     callback), this keeps separate callbacks per ``task_id`` so that
     concurrent ACP sessions cannot steal each other's permission dialogs.
     """
-    with _get_task_approval_lock():
+    with _task_approval_lock:
         _task_approval_callbacks[task_id] = cb
 
 
 def unregister_task_approval_callback(task_id: str) -> None:
     """Remove the per-task approval callback registered for *task_id*."""
-    with _get_task_approval_lock():
+    with _task_approval_lock:
         _task_approval_callbacks.pop(task_id, None)
 
 
 def get_task_approval_callback(task_id: str):
     """Return the approval callback for *task_id*, or the global fallback."""
-    with _get_task_approval_lock():
+    with _task_approval_lock:
         cb = _task_approval_callbacks.get(task_id)
     return cb if cb is not None else _approval_callback
 

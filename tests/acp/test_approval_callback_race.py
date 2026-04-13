@@ -19,7 +19,7 @@ class TestTaskApprovalRegistry:
     def setup_method(self):
         from tools import terminal_tool as tt
         # Clear registry between tests
-        with tt._get_task_approval_lock():
+        with tt._task_approval_lock:
             tt._task_approval_callbacks.clear()
 
     def test_register_and_get(self):
@@ -83,7 +83,7 @@ class TestApprovalCallbackConcurrency:
 
     def setup_method(self):
         from tools import terminal_tool as tt
-        with tt._get_task_approval_lock():
+        with tt._task_approval_lock:
             tt._task_approval_callbacks.clear()
 
     def test_parallel_sessions_see_own_callback(self):
@@ -213,7 +213,7 @@ class TestCheckAllGuardsTaskScoped:
 
     def setup_method(self):
         from tools import terminal_tool as tt
-        with tt._get_task_approval_lock():
+        with tt._task_approval_lock:
             tt._task_approval_callbacks.clear()
 
     def test_check_all_guards_uses_task_callback(self):
