@@ -122,6 +122,20 @@ _cached_sudo_password: str = ""
 _sudo_password_callback = None
 _approval_callback = None
 
+# Task-scoped approval callbacks: task_id -> callback.
+# ACP sessions register per-task callbacks here so that concurrent sessions
+# cannot overwrite each other's global _approval_callback.
+_task_approval_callbacks: dict = {}
+_task_approval_lock = None  # lazily initialised (threading.Lock)
+
+
+def _get_task_approval_lock():
+    global _task_approval_lock
+    if _task_approval_lock is None:
+        import threading
+        _task_approval_lock = threading.Lock()
+    return _task_approval_lock
+
 
 def set_sudo_password_callback(cb):
     """Register a callback for sudo password prompts (used by CLI)."""
@@ -134,6 +148,30 @@ def set_approval_callback(cb):
     global _approval_callback
     _approval_callback = cb
 
+
+def register_task_approval_callback(task_id: str, cb) -> None:
+    """Register a per-task approval callback for ACP sessions.
+
+    Unlike ``set_approval_callback`` (which sets a single process-wide
+    callback), this keeps separate callbacks per ``task_id`` so that
+    concurrent ACP sessions cannot steal each other's permission dialogs.
+    """
+    with _get_task_approval_lock():
+        _task_approval_callbacks[task_id] = cb
+
+
+def unregister_task_approval_callback(task_id: str) -> None:
+    """Remove the per-task approval callback registered for *task_id*."""
+    with _get_task_approval_lock():
+        _task_approval_callbacks.pop(task_id, None)
+
+
+def get_task_approval_callback(task_id: str):
+    """Return the approval callback for *task_id*, or the global fallback."""
+    with _get_task_approval_lock():
+        cb = _task_approval_callbacks.get(task_id)
+    return cb if cb is not None else _approval_callback
+
 # =============================================================================
 # Dangerous Command Approval System
 # =============================================================================
@@ -145,10 +183,15 @@ from tools.approval import (
 )
 
 
-def _check_all_guards(command: str, env_type: str) -> dict:
-    """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
-    return _check_all_guards_impl(command, env_type,
-                                  approval_callback=_approval_callback)
+def _check_all_guards(command: str, env_type: str, task_id: str = "") -> dict:
+    """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback.
+
+    Uses the per-task callback when *task_id* is given (ACP multi-session path)
+    so concurrent sessions cannot steal each other's approval dialogs.
+    Falls back to the process-wide ``_approval_callback`` for CLI sessions.
+    """
+    cb = get_task_approval_callback(task_id) if task_id else _approval_callback
+    return _check_all_guards_impl(command, env_type, approval_callback=cb)
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
@@ -1313,7 +1356,7 @@ def terminal_tool(
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
         if not force:
-            approval = _check_all_guards(command, env_type)
+            approval = _check_all_guards(command, env_type, task_id=effective_task_id)
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
                 if approval.get("status") == "approval_required":

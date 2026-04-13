@@ -413,10 +413,9 @@ class HermesACPAgent(acp.Agent):
         if approval_cb:
             try:
                 from tools import terminal_tool as _terminal_tool
-                previous_approval_cb = getattr(_terminal_tool, "_approval_callback", None)
-                _terminal_tool.set_approval_callback(approval_cb)
+                _terminal_tool.register_task_approval_callback(session_id, approval_cb)
             except Exception:
-                logger.debug("Could not set ACP approval callback", exc_info=True)
+                logger.debug("Could not register ACP task approval callback", exc_info=True)
 
         def _run_agent() -> dict:
             try:
@@ -433,9 +432,9 @@ class HermesACPAgent(acp.Agent):
                 if approval_cb:
                     try:
                         from tools import terminal_tool as _terminal_tool
-                        _terminal_tool.set_approval_callback(previous_approval_cb)
+                        _terminal_tool.unregister_task_approval_callback(session_id)
                     except Exception:
-                        logger.debug("Could not restore approval callback", exc_info=True)
+                        logger.debug("Could not unregister ACP task approval callback", exc_info=True)
 
         try:
             result = await loop.run_in_executor(_executor, _run_agent)
