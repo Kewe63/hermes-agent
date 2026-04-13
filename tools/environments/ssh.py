@@ -161,11 +161,16 @@ class SSHEnvironment(BaseEnvironment):
                 raise RuntimeError(f"remote mkdir failed: {result.stderr.strip()}")
 
         # Symlink staging avoids fragile GNU tar --transform rules.
+        # On Windows, symlink creation requires admin rights or Developer Mode,
+        # so fall back to copying the file when os.symlink raises OSError.
         with tempfile.TemporaryDirectory(prefix="hermes-ssh-bulk-") as staging:
             for host_path, remote_path in files:
                 staged = os.path.join(staging, remote_path.lstrip("/"))
                 os.makedirs(os.path.dirname(staged), exist_ok=True)
-                os.symlink(os.path.abspath(host_path), staged)
+                try:
+                    os.symlink(os.path.abspath(host_path), staged)
+                except OSError:
+                    shutil.copy2(host_path, staged)
 
             tar_cmd = ["tar", "-chf", "-", "-C", staging, "."]
             ssh_cmd = self._build_ssh_command()
