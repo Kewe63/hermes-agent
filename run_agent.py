@@ -1240,6 +1240,18 @@ class AIAgent:
         except Exception:
             pass
 
+        # Post-response hooks: lightweight response quality gates loaded
+        # from ~/.hermes/hooks/<module>.py.  Each hook can inject a system
+        # prompt addition and/or validate the final response.
+        self._post_response_hooks = []
+        _hooks_cfg = _agent_cfg.get("agent", {}).get("post_response_hooks", [])
+        if _hooks_cfg and isinstance(_hooks_cfg, list):
+            try:
+                from agent.post_response_hooks import load_hooks
+                self._post_response_hooks = load_hooks(_hooks_cfg)
+            except Exception as _hook_err:
+                logger.warning("Failed to load post-response hooks: %s", _hook_err)
+
         # Tool-use enforcement config: "auto" (default — matches hardcoded
         # model list), true (always), false (never), or list of substrings.
         _agent_section = _agent_cfg.get("agent", {})
@@ -3157,6 +3169,13 @@ class AIAgent:
             tool_guidance.append(SKILLS_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
+
+        # Post-response hook prompt additions (pre-response guidance)
+        if self._post_response_hooks:
+            from agent.post_response_hooks import build_system_prompt_additions
+            _hook_additions = build_system_prompt_additions(self._post_response_hooks)
+            if _hook_additions:
+                prompt_parts.append(_hook_additions)
 
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
@@ -7809,6 +7828,7 @@ class AIAgent:
         self._thinking_prefill_retries = 0
         self._last_content_with_tools = None
         self._mute_post_response = False
+        self._hook_nudge_retries = 0
         self._unicode_sanitization_passes = 0
 
         # Pre-turn connection health check: detect and clean up dead TCP
@@ -10373,7 +10393,36 @@ class AIAgent:
                     
                     # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
                     final_response = self._strip_think_blocks(final_response).strip()
-                    
+
+                    # Post-response hook check: run each hook's check() on
+                    # the final response.  If any hook fails, inject a nudge
+                    # message and re-enter the loop for re-generation.
+                    # max_nudges is configurable per-hook (default 1).
+                    if self._post_response_hooks and final_response:
+                        from agent.post_response_hooks import run_post_response_checks
+                        _hook_context = {
+                            "user_message": original_user_message,
+                            "messages": messages,
+                            "model": self.model,
+                        }
+                        _nudge_msg = run_post_response_checks(
+                            self._post_response_hooks, final_response, _hook_context,
+                        )
+                        _max = max(h.max_nudges for h in self._post_response_hooks)
+                        if _nudge_msg and self._hook_nudge_retries < _max:
+                            self._hook_nudge_retries += 1
+                            logger.info(
+                                "Post-response hook triggered nudge (%d/%d): %s",
+                                self._hook_nudge_retries, _max, _nudge_msg[:100],
+                            )
+                            self._emit_status(
+                                f"↻ Post-response hook triggered re-generation "
+                                f"({self._hook_nudge_retries}/{_max})"
+                            )
+                            messages.append({"role": "assistant", "content": final_response})
+                            messages.append({"role": "user", "content": f"[System: {_nudge_msg}]"})
+                            continue
+
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
 
                     # Pop thinking-only prefill message(s) before appending
