@@ -633,13 +633,54 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     sources = create_source_router(auth)
 
     if "/" not in identifier:
-        identifier = _resolve_short_name(identifier, sources, c)
-        if not identifier:
-            return
+        resolved = _resolve_short_name(identifier, sources, c)
+        if resolved:
+            identifier = resolved
+        # If not resolved, still use original identifier (may be a local skill)
 
     meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
 
     if not meta:
+        # Fallback: check local skills directory
+        local_name = identifier.rsplit("/", 1)[-1] if "/" in identifier else identifier
+        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter
+
+        local_skill_path = SKILLS_DIR / local_name / "SKILL.md"
+        if local_skill_path.exists():
+            try:
+                raw = local_skill_path.read_text(encoding="utf-8")
+                frontmatter, body = _parse_frontmatter(raw)
+                name = frontmatter.get("name", local_name)
+                description = frontmatter.get("description", "")
+                if not description:
+                    for line in body.strip().split("\n"):
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            description = line
+                            break
+                c.print()
+                info_lines = [
+                    f"[bold]Name:[/] {name}",
+                    f"[bold]Description:[/] {description}",
+                    f"[bold]Source:[/] local",
+                    f"[bold]Trust:[/] [dim]local[/]",
+                    f"[bold]Identifier:[/] {local_name}",
+                    f"[bold]Path:[/] [dim]{local_skill_path.parent}[/]",
+                ]
+                tags = frontmatter.get("tags", [])
+                if tags:
+                    info_lines.append(f"[bold]Tags:[/] {', '.join(tags)}")
+                c.print(Panel("\n".join(info_lines), title=f"Skill: {name}"))
+                lines = body.split("\n")
+                preview = "\n".join(lines[:50])
+                if len(lines) > 50:
+                    preview += f"\n\n... ({len(lines) - 50} more lines)"
+                c.print(Panel(preview, title="SKILL.md Preview"))
+                c.print()
+                return
+            except Exception:
+                pass  # Fall through to error message below on parse failure
+
         c.print(f"[bold red]Error:[/] Could not find '{identifier}' in any source.\n")
         return
 
@@ -733,11 +774,44 @@ def inspect_skill(identifier: str) -> Optional[dict]:
     sources = create_source_router(auth)
     ident = identifier
     if "/" not in ident:
-        ident = _resolve_short_name(ident, sources, c)
-        if not ident:
-            return None
+        resolved = _resolve_short_name(ident, sources, c)
+        if resolved:
+            ident = resolved
+        # If not resolved, still use original identifier (may be a local skill)
     meta, bundle, _ = _resolve_source_meta_and_bundle(ident, sources)
     if not meta:
+        # Fallback: check local skills directory
+        local_name = ident.rsplit("/", 1)[-1] if "/" in ident else ident
+        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter
+
+        local_skill_path = SKILLS_DIR / local_name / "SKILL.md"
+        if local_skill_path.exists():
+            try:
+                raw = local_skill_path.read_text(encoding="utf-8")
+                frontmatter, body = _parse_frontmatter(raw)
+                name = frontmatter.get("name", local_name)
+                description = frontmatter.get("description", "")
+                if not description:
+                    for line in body.strip().split("\n"):
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            description = line
+                            break
+                out: dict = {
+                    "name": name,
+                    "description": description,
+                    "source": "local",
+                    "identifier": local_name,
+                    "tags": list(frontmatter.get("tags", [])),
+                }
+                lines = body.split("\n")
+                preview = "\n".join(lines[:50])
+                if len(lines) > 50:
+                    preview += f"\n\n... ({len(lines) - 50} more lines)"
+                out["skill_md_preview"] = preview
+                return out
+            except Exception:
+                pass
         return None
     out: dict = {
         "name": meta.name,
