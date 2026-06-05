@@ -13875,7 +13875,7 @@ class GatewayRunner:
                 lines.append(t("gateway.usage.label_cache_write", count=f"{cache_write:,}"))
             lines.append(t("gateway.usage.label_output_tokens", count=f"{output_tokens:,}"))
             lines.append(t("gateway.usage.label_total", count=f"{agent.session_total_tokens:,}"))
-            lines.append(t("gateway.usage.label_api_calls", count=agent.session_api_calls))
+            lines.append(t("gateway.usage.label_api_calls", count=f"{agent.session_api_calls:,}"))
 
             # Cost estimation
             try:
@@ -13905,7 +13905,7 @@ class GatewayRunner:
                 pct = min(100, ctx.last_prompt_tokens / ctx.context_length * 100) if ctx.context_length else 0
                 lines.append(t("gateway.usage.label_context", used=f"{ctx.last_prompt_tokens:,}", total=f"{ctx.context_length:,}", pct=f"{pct:.0f}"))
             if ctx.compression_count:
-                lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
+                lines.append(t("gateway.usage.label_compressions", count=f"{ctx.compression_count:,}"))
 
             if account_lines:
                 lines.append("")
@@ -13922,7 +13922,7 @@ class GatewayRunner:
             approx = estimate_messages_tokens_rough(msgs)
             lines = [
                 t("gateway.usage.header_session_info"),
-                t("gateway.usage.label_messages", count=len(msgs)),
+                t("gateway.usage.label_messages", count=f"{len(msgs):,}"),
                 t("gateway.usage.label_estimated_context", count=f"{approx:,}"),
                 t("gateway.usage.detailed_after_first"),
             ]
