@@ -654,13 +654,16 @@ def run_conversation(
             )
             # May need multiple passes for very large sessions with small
             # context windows (each pass summarises the middle N turns).
+            _tokens_before = _preflight_tokens
             for _pass in range(3):
                 _orig_len = len(messages)
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
                     task_id=effective_task_id,
                 )
-                if len(messages) >= _orig_len:
+                # Determine if we made progress: either fewer messages or fewer tokens
+                progress_made = (len(messages) < _orig_len) or (_preflight_tokens < _tokens_before)
+                if not progress_made:
                     break  # Cannot compress further
                 # Compression created a new session — clear the history
                 # reference so _flush_messages_to_session_db writes ALL
