@@ -245,7 +245,13 @@ def check_compression_model_feasibility(agent: Any) -> None:
         # so the session refuses to start.
         raise
     except Exception as exc:
-        logger.debug(
+        msg = (
+            "⚠ Compression feasibility check failed — context compression "
+            f"may not work this session: {exc}"
+        )
+        agent._compression_warning = msg
+        agent._emit_status(msg)
+        logger.warning(
             "Compression feasibility check failed (non-fatal): %s", exc
         )
 

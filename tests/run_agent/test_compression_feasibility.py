@@ -320,8 +320,8 @@ def test_skips_check_when_compression_disabled():
 
 
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
-def test_exception_does_not_crash(mock_get_client):
-    """Exceptions in the check are caught — never blocks startup."""
+def test_exception_is_logged_and_user_visible(mock_get_client):
+    """Exceptions in the check are caught, logged at WARNING, and surfaced to user."""
     agent = _make_agent()
     mock_get_client.side_effect = RuntimeError("boom")
 
@@ -331,8 +331,10 @@ def test_exception_does_not_crash(mock_get_client):
     # Should not raise
     agent._check_compression_model_feasibility()
 
-    # No user-facing message (error is debug-logged)
-    assert len(messages) == 0
+    # User-facing warning is now emitted (previously was debug-only)
+    assert len(messages) == 1
+    assert "Compression feasibility check failed" in messages[0]
+    assert "may not work this session" in messages[0]
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=100_000)
