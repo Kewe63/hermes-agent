@@ -449,10 +449,21 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 # Auto-extend PROVIDER_REGISTRY with any api-key provider registered in
 # providers/ that is not already declared above.  New providers only need a
 # plugins/model-providers/<name>/ plugin — no edits to this file required.
+#
+# For providers that ARE already hardcoded above (stepfun, azure-foundry,
+# etc.), a user plugin with the same name can still override the runtime
+# ``inference_base_url`` by setting ``base_url`` on its profile — useful for
+# region-specific endpoints (stepfun's ``.com`` for China vs ``.ai`` for
+# international) or self-hosted endpoints. The plugin's value wins
+# (last-writer-wins, matching ``register_provider()`` semantics in
+# ``providers/_REGISTRY``). A plugin that does not set ``base_url`` leaves
+# the hardcoded value untouched (#48450).
 try:
     from providers import list_providers as _list_providers_for_registry
     for _pp in _list_providers_for_registry():
         if _pp.name in PROVIDER_REGISTRY:
+            if _pp.base_url:
+                PROVIDER_REGISTRY[_pp.name].inference_base_url = _pp.base_url
             continue
         if _pp.auth_type != "api_key" or not _pp.env_vars:
             continue
