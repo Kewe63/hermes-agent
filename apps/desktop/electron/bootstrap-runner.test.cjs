@@ -136,3 +136,112 @@ test('resolveInstallScript rethrows when the 404 fallback is unavailable', async
     fs.rmSync(home, { recursive: true, force: true })
   }
 })
+
+// Regression tests for #49982 — confirm the install.sh contract that
+// bootstrap-runner.cjs depends on. The Electron desktop app calls
+// install.sh --manifest to discover the stage list, then runs each
+// stage via install.sh --json --stage <name> <args>. Both modes must
+// emit parseable JSON on stdout so the renderer's install overlay can
+// stream progress without the user staring at a generic error.
+//
+// These tests exercise the real scripts/install.sh in this repository
+// (the same file bootstrap-runner would resolve at runtime), and are
+// Linux/macOS only — Windows uses install.ps1 and a parallel test
+// there will land with the Windows bootstrap path.
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
+const LOCAL_INSTALL_SH = path.join(REPO_ROOT, 'scripts', 'install.sh')
+
+function skipIfNoInstallScript() {
+  if (process.platform === 'win32') {
+    // Windows uses install.ps1; bootstrap-runner's Posix/PowerShell split
+    // is exercised by bootstrap-platform.test.cjs.
+    return 'install.ps1 contract test runs only on Posix'
+  }
+  if (!fs.existsSync(LOCAL_INSTALL_SH)) {
+    return `scripts/install.sh not present at ${LOCAL_INSTALL_SH}`
+  }
+  return null
+}
+
+test('install.sh --manifest emits a parseable stage contract (Phase 1D)', t => {
+  const skip = skipIfNoInstallScript()
+  if (skip) {
+    t.skip(skip)
+    return
+  }
+
+  const { execFileSync } = require('node:child_process')
+  const stdout = execFileSync(LOCAL_INSTALL_SH, ['--manifest'], {
+    encoding: 'utf8'
+  })
+  const manifest = JSON.parse(stdout)
+
+  assert.equal(manifest.protocol_version, 1, 'manifest protocol_version=1')
+  assert.ok(Array.isArray(manifest.stages), 'manifest.stages must be an array')
+  assert.ok(manifest.stages.length > 0, 'manifest.stages must not be empty')
+
+  // Pin a few stage names that bootstrap-runner.cjs and the renderer
+  // overlay depend on. Adding a new stage is fine, renaming or
+  // removing these is a breaking change for the desktop installer.
+  const stageNames = manifest.stages.map(s => s.name)
+  for (const required of [
+    'prerequisites',
+    'repository',
+    'venv',
+    'python-deps',
+    'complete'
+  ]) {
+    assert.ok(
+      stageNames.includes(required),
+      `manifest must declare stage '${required}' (got: ${stageNames.join(', ')})`
+    )
+  }
+
+  // Every stage must declare a category — the renderer uses it to
+  // group progress rows.
+  for (const stage of manifest.stages) {
+    assert.ok(
+      typeof stage.category === 'string' && stage.category.length > 0,
+      `stage ${stage.name} missing category`
+    )
+    assert.equal(
+      typeof stage.needs_user_input,
+      'boolean',
+      `stage ${stage.name} needs_user_input must be boolean`
+    )
+  }
+})
+
+test('install.sh --json --stage prerequisites runs cleanly when prereqs are met', t => {
+  const skip = skipIfNoInstallScript()
+  if (skip) {
+    t.skip(skip)
+    return
+  }
+
+  const { execFileSync } = require('node:child_process')
+  // The prerequisites stage is the cheap one (no network, no install).
+  // On a developer machine git/node/internet are already present, so it
+  // returns {"ok":true}. If the runner is invoked on a host without
+  // them, JSONDecodeError must NOT mask the failure — the JSON line
+  // is still emitted with ok=false.
+  let stdout
+  try {
+    stdout = execFileSync(LOCAL_INSTALL_SH, ['--json', '--stage', 'prerequisites'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+  } catch (err) {
+    stdout = err.stdout ? err.stdout.toString() : ''
+    // Non-zero exit is fine here — what we care about is that we can
+    // parse a JSON frame out of stdout regardless.
+  }
+  const line = stdout
+    .split('\n')
+    .reverse()
+    .find(l => l.trim().startsWith('{'))
+  assert.ok(line, `expected at least one JSON line in: ${stdout}`)
+  const frame = JSON.parse(line)
+  assert.equal(frame.stage, 'prerequisites')
+  assert.equal(typeof frame.ok, 'boolean')
+})
