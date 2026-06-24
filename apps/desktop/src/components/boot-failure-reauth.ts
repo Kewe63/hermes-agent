@@ -48,11 +48,18 @@ export function isRemoteReauthFailure(config: DesktopConnectionConfig | null | u
     return false
   }
 
-  if (config.remoteAuthMode === 'oauth') {
+  // The public remoteAuthMode union is 'oauth' | 'token' today; we deliberately
+  // also recognise 'basic' as reauth-shaped, but comparing directly against
+  // the literal 'basic' would fail tsc with "no overlap". Casting through
+  // `string` keeps the comparison tsc-clean for today; the follow-up PR that
+  // widens the public type replaces these casts with plain equality again.
+  const authMode: string = String(config.remoteAuthMode)
+
+  if (authMode === 'oauth') {
     return !config.remoteOauthConnected && Boolean(config.remoteUrl)
   }
 
-  if (config.remoteAuthMode === 'basic') {
+  if (authMode === 'basic') {
     return Boolean(config.remoteUrl)
   }
 
