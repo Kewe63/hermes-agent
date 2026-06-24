@@ -35,6 +35,25 @@ describe('isRemoteReauthFailure', () => {
     expect(isRemoteReauthFailure(config({ remoteAuthMode: 'token' }))).toBe(false)
   })
 
+  it('true for a basic-auth remote gateway with a URL (root cause for #51873)', () => {
+    // 'basic' is not yet in DesktopConnectionConfig['remoteAuthMode'] — this
+    // test pins the detection behavior we want once a follow-up PR widens the
+    // type. The double cast (object → unknown → typed config) keeps TS happy
+    // without committing to the type widening in the same PR.
+    const basicConfig = config({
+      remoteAuthMode: 'basic' as unknown as DesktopConnectionConfig['remoteAuthMode']
+    })
+    expect(isRemoteReauthFailure(basicConfig)).toBe(true)
+  })
+
+  it('false when a basic-auth remote has no URL to sign in against', () => {
+    const basicConfig = config({
+      remoteAuthMode: 'basic' as unknown as DesktopConnectionConfig['remoteAuthMode'],
+      remoteUrl: ''
+    })
+    expect(isRemoteReauthFailure(basicConfig)).toBe(false)
+  })
+
   it('false when there is no remote URL to sign in against', () => {
     expect(isRemoteReauthFailure(config({ remoteUrl: '' }))).toBe(false)
   })
