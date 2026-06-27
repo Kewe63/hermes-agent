@@ -30,7 +30,10 @@ jobs:
     # so the cache-to step (write to ghcr.io) fails with "installation not allowed
     # to Write organization package". Upstream PRs run the full pipeline; forks
     # get gate-level coverage from ci.yml + lint.yml + typecheck.yml + tests.yml.
-    if: github.event_name != 'pull_request' || github.repository == 'NousResearch/hermes-agent'
+    # Use head.repo.full_name instead of github.repository because this workflow
+    # is called as a reusable workflow from ci.yml, where github.repository is
+    # always the upstream repo (NousResearch/hermes-agent).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -153,7 +156,10 @@ jobs:
     # so the cache-to step (write to ghcr.io) fails with "installation not allowed
     # to Write organization package". Upstream PRs run the full pipeline; forks
     # get gate-level coverage from ci.yml + lint.yml + typecheck.yml + tests.yml.
-    if: github.event_name != 'pull_request' || github.repository == 'NousResearch/hermes-agent'
+    # Use head.repo.full_name instead of github.repository because this workflow
+    # is called as a reusable workflow from ci.yml, where github.repository is
+    # always the upstream repo (NousResearch/hermes-agent).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'NousResearch/hermes-agent'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     outputs:
