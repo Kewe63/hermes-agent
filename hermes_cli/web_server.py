@@ -46,6 +46,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__, __release_date__
+from hermes_cli import _dashboard_session_token
 from hermes_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
@@ -255,11 +256,16 @@ app.include_router(_memory_oauth_router)
 # Session token for protecting sensitive endpoints (reveal).
 # The desktop shell mints the token and injects it via
 # HERMES_DASHBOARD_SESSION_TOKEN so its main process can authenticate the
-# /api calls it makes on the user's behalf; otherwise we generate one fresh
-# on every server start. Either way it dies when the process exits and is
-# injected into the SPA HTML so only the legitimate web UI can use it.
+# /api calls it makes on the user's behalf; otherwise we read/generate one
+# (and persist it) via ``hermes_cli._dashboard_session_token.load_or_create``
+# so the same token survives a server restart. Either way it dies when the
+# process exits and is injected into the SPA HTML so only the legitimate
+# web UI can use it.
+#
+# Cross-restart persistence (#53972) lives in the dedicated module so the
+# logic is unit-testable without importing fastapi/uvicorn.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
+_SESSION_TOKEN = _dashboard_session_token.load_or_create()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
