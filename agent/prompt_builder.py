@@ -88,15 +88,12 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     stop_at = _find_git_root(cwd)
     current = cwd.resolve()
 
-    # When there is no git root, only check cwd itself – walking parents
-    # could pick up a .hermes.md planted in /tmp, /home, etc.
-    search_dirs = [current, *current.parents] if stop_at else [current]
-
-    for directory in search_dirs:
+    for directory in [current, *current.parents]:
         for name in _HERMES_MD_NAMES:
             candidate = directory / name
             if candidate.is_file():
                 return candidate
+        # Stop walking at the git root (or filesystem root).
         if stop_at and directory == stop_at:
             break
     return None

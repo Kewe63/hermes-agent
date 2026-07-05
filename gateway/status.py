@@ -81,18 +81,12 @@ def terminate_pid(pid: int, *, force: bool = False) -> None:
     because os.kill(..., SIGTERM) is not equivalent to a tree-killing hard stop.
     """
     if force and _IS_WINDOWS:
-        # CREATE_NO_WINDOW: terminate_pid runs from the windowless pythonw.exe
-        # gateway/desktop backend, so a bare taskkill spawn would flash a
-        # conhost window on every force-kill.
-        from hermes_cli._subprocess_compat import windows_hide_flags
-
         try:
             result = subprocess.run(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
                 capture_output=True,
                 text=True,
                 timeout=10,
-                creationflags=windows_hide_flags(),
             )
         except FileNotFoundError:
             os.kill(pid, signal.SIGTERM)
@@ -171,18 +165,17 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
         if raw:
             return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
 
-    if not _IS_WINDOWS:
-        try:
-            result = subprocess.run(
-                ["ps", "-p", str(pid), "-o", "command="],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
     # Windows fallback: psutil (already used by _pid_exists)
     try:

@@ -31,7 +31,7 @@ import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
-import { api, buildWsUrl } from "@/lib/api";
+import { api, HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 
 import { cn } from "@/lib/utils";
@@ -230,11 +230,15 @@ export function ChatSidebar({
     let unmounting = false;
     let ws: WebSocket | null = null;
     void (async () => {
-      const url = await buildWsUrl("/api/events", { channel });
-      if (unmounting) {
+      const [authName, authValue] = await buildWsAuthParam();
+      if (!authValue || unmounting) {
         return;
       }
-      ws = new WebSocket(url);
+      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const qs = new URLSearchParams({ [authName]: authValue, channel });
+      ws = new WebSocket(
+        `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/events?${qs.toString()}`,
+      );
 
       // `unmounting` suppresses the banner during cleanup — `ws.close()`
       // from the effect's return fires a close event with code 1005 that
