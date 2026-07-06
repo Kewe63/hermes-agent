@@ -8347,9 +8347,10 @@ def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional
     2. ``<root_home>/scripts/<script>`` (scheduler fallback; only consulted when
        candidate (1) is absent — never escapes profile isolation when both exist)
 
-    The returned path is always profile-rooted-relative (``"foo.py"`` not
-    ``"../../.hermes/scripts/foo.py"``) and the containment guard still
-    rejects absolute paths and ``~``-prefixed paths up front.
+    Both absolute and relative inputs are supported; both stages apply a
+    containment guard against their respective scripts root to reject
+    ``..``-escapes. The returned path is always a clean relative name so
+    the stored job record stays portable across profile renames.
     """
     text = _cron_optional_text(value)
     if not text:
@@ -8357,30 +8358,19 @@ def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional
 
     raw_path = Path(text).expanduser()
 
-    # Reject absolute paths and ~ expansion at the API boundary.
-    # Cron scripts must be relative to keep the scheduler's path-traversal
-    # guard meaningful — only relative paths within the scripts dir are allowed.
-    if raw_path.is_absolute():
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"script path must be relative to ~/.hermes/scripts/. "
-                f"Got absolute path: {text!r}. Place scripts in ~/.hermes/scripts/ "
-                f"and use just the filename."
-            ),
-        )
-
-    # Two-stage resolution: profile-specific first, root home second.
-    # We need the profile-specific scripts/ root for the containment guard,
-    # but when the script lives at the root home we still want to surface
-    # the same relative name so the stored job record stays script-only and
-    # the scheduler can resolve it cleanly at tick time.
+    # Stage 1: profile-specific scripts (per-profile isolation preserved).
+    # Absolute paths are resolved directly; relative paths are anchored to
+    # the profile's scripts root. Containment against ``profile_scripts_root``
+    # is what enforces the API boundary — outside-profile absolute paths and
+    # ..-escapes raise here.
     profile_scripts_root = (profile_home / "scripts").resolve()
+    if raw_path.is_absolute():
+        profile_candidate = raw_path.resolve()
+    else:
+        profile_candidate = (profile_scripts_root / raw_path).resolve()
 
-    # Stage 1: profile-specific scripts (per-profile isolation preserved)
-    profile_candidate = (profile_scripts_root / raw_path).resolve()
     try:
-        relative = profile_candidate.relative_to(profile_scripts_root)
+        profile_relative = profile_candidate.relative_to(profile_scripts_root)
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
@@ -8388,7 +8378,7 @@ def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional
         ) from exc
 
     if profile_candidate.exists() and profile_candidate.is_file():
-        return str(relative)
+        return str(profile_relative)
 
     # Stage 2: root home scripts (matches cron/scheduler.py::_run_job_script).
     # Only consulted when stage 1 is absent — the profile-specific copy wins
@@ -8398,10 +8388,17 @@ def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional
 
     root_home = get_hermes_home().resolve()
     root_scripts_root = (root_home / "scripts").resolve()
-    root_candidate = (root_scripts_root / raw_path).resolve()
+    if raw_path.is_absolute():
+        root_candidate = profile_candidate  # absolute paths are already resolved
+    else:
+        root_candidate = (root_scripts_root / raw_path).resolve()
+
     try:
         root_relative = root_candidate.relative_to(root_scripts_root)
     except ValueError as exc:
+        # Absolute path that escapes both roots, or relative path with ..-escape
+        # that aims outside the root scripts dir. The error message reflects
+        # the API boundary contract: scripts must live inside a scripts dir.
         raise HTTPException(
             status_code=400,
             detail=f"script path escapes scripts directory: {text!r}",

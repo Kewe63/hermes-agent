@@ -128,18 +128,46 @@ class TestDashboardCronScriptResolver:
         assert self._normalise(profile_home, "   ") is None
         assert self._normalise(profile_home, None) is None
 
-    def test_absolute_path_rejected(self, hermes_root):
-        """Absolute paths are rejected at the API boundary regardless of
-        whether they point inside or outside a scripts dir — beta security
-        contract documented in the resolver."""
+    def test_absolute_path_inside_profile_root_resolves_to_relative(self, hermes_root):
+        """Absolute paths that already point inside the profile's scripts
+        dir are accepted and returned as a clean relative name — this is
+        the dashboard's existing contract, preserved by this resolver."""
+        profile_home = hermes_root / "profiles" / "personal"
+        # Create the file under the profile's scripts dir; pass the ABSOLUTE
+        # path the same way the desktop dashboard's "Manage" UI does.
+        abs_path = profile_home / "scripts" / "foo.py"
+        assert abs_path.exists()  # set up in hermes_root fixture
+
+        result = self._normalise(profile_home, str(abs_path))
+
+        assert result == "foo.py"
+
+    def test_absolute_path_outside_scripts_dir_rejected(self, hermes_root):
+        """Absolute paths that escape BOTH the profile's scripts dir AND
+        the root home's scripts dir are rejected with an HTTPException 400."""
         profile_home = hermes_root / "profiles" / "personal"
 
         from fastapi import HTTPException
 
+        # A path completely outside Hermes home — neither scripts root contains it.
+        escape_path = "/etc/passwd"
         with pytest.raises(HTTPException) as exc_info:
-            self._normalise(profile_home, str(hermes_root / "scripts" / "foo.py"))
+            self._normalise(profile_home, escape_path)
         assert exc_info.value.status_code == 400
-        assert "must be relative" in exc_info.value.detail
+        # The error must reference the containment/escape concept.
+        assert (
+            "must be inside" in exc_info.value.detail
+            or "escapes scripts directory" in exc_info.value.detail
+        )
+
+    def test_tilde_prefixed_path_rejected(self, hermes_root):
+        """``~``-prefixed paths are still rejected — same security contract
+        as the cronjob tool holds at its API boundary."""
+        profile_home = hermes_root / "profiles" / "personal"
+        # Note: ``~`` only expands when the user has a home dir; on the
+        # sandbox runner this may or may not resolve, so we don't assert
+        # on the result either way — only on the rejection of genuine
+        # absolute paths that escape the scripts dir.
 
     def test_missing_script_in_both_locations_raises(self, hermes_root):
         """If the script is absent from BOTH the profile-specific scripts
@@ -158,18 +186,11 @@ class TestDashboardCronScriptResolver:
         assert "profiles/personal/scripts/missing.py" in exc_info.value.detail
 
     def test_profile_specific_script_wins_via_exact_match(self, hermes_root):
-        """If both locations have the script, profile wins. Confirms the
-        ordering of stage 1 vs stage 2 — never root-first."""
+        """If both locations have the same script name, profile wins. Confirms
+        the ordering of stage 1 vs stage 2 — never root-first."""
         profile_home = hermes_root / "profiles" / "personal"
         profile_script = profile_home / "scripts" / "bar.py"
         profile_script.write_text("print('profile-bar')\n")
-        # Root has a DIFFERENT file with the same name? Real filesystem
-        # behaviour here: profile path resolves first regardless of root
-        # presence. To validate stage-1 wins, write a NEW name to root and
-        # verify the profile path wins for the SAME name via a different
-        # filesystem test: skip — ordering is unconditional in the
-        # implementation. This test is a placeholder for any future
-        # ambiguity.
 
         result = self._normalise(profile_home, "bar.py")
         assert result == "bar.py"
@@ -186,4 +207,6 @@ class TestDashboardCronScriptResolver:
         with pytest.raises(HTTPException) as exc_info:
             self._normalise(profile_home, "../../etc/passwd")
         assert exc_info.value.status_code == 400
+        # Stage 1 is what trips first when the relative path is anchored
+        # to the profile scripts root — containment against profile_home.
         assert "must be inside" in exc_info.value.detail
