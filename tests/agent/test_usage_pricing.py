@@ -252,6 +252,94 @@ def test_deepseek_v4_pro_estimate_usage_cost():
     assert float(result.amount_usd) == 3.48
 
 
+def test_deepseek_v4_pro_estimate_usage_cost():
+    """Ensure deepseek-v4-pro sessions get a dollar estimate, not unknown."""
+    result = estimate_usage_cost(
+        "deepseek-v4-pro",
+        CanonicalUsage(input_tokens=1000000, output_tokens=500000),
+        provider="deepseek",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
+    assert float(result.amount_usd) == 3.48
+
+
+def test_deepseek_chat_and_v4_flash_pricing_entry_exists():
+    """Regression test: deepseek-chat and deepseek-v4-flash must have pricing entries.
+
+    Before this fix, deepseek-v4-flash sessions showed as unknown cost
+    because the _OFFICIAL_DOCS_PRICING table had no entry for that model.
+    Additionally, deepseek-chat was missing cache_read_cost_per_million,
+    causing cache hits to price as 'unknown'. See #60091.
+    """
+    # Test deepseek-chat
+    chat_entry = get_pricing_entry(
+        "deepseek-chat",
+        provider="deepseek",
+    )
+    assert chat_entry is not None
+    assert chat_entry.input_cost_per_million is not None
+    assert chat_entry.output_cost_per_million is not None
+    assert float(chat_entry.input_cost_per_million) == 0.14
+    assert float(chat_entry.output_cost_per_million) == 0.28
+    assert float(chat_entry.cache_read_cost_per_million) == 0.014
+
+    # Test deepseek-v4-flash (same pricing as deepseek-chat)
+    flash_entry = get_pricing_entry(
+        "deepseek-v4-flash",
+        provider="deepseek",
+    )
+    assert flash_entry is not None
+    assert flash_entry.input_cost_per_million is not None
+    assert flash_entry.output_cost_per_million is not None
+    assert float(flash_entry.input_cost_per_million) == 0.14
+    assert float(flash_entry.output_cost_per_million) == 0.28
+    assert float(flash_entry.cache_read_cost_per_million) == 0.014
+
+
+def test_deepseek_chat_estimate_usage_cost_with_cache():
+    """Ensure deepseek-chat sessions with cache hits get a dollar estimate, not unknown.
+
+    Before the fix, cache_read_cost_per_million was missing from the deepseek-chat
+    entry, causing estimate_usage_cost to return 'unknown' for sessions with cache hits.
+    """
+    result = estimate_usage_cost(
+        "deepseek-chat",
+        CanonicalUsage(
+            input_tokens=1000000,
+            output_tokens=500000,
+            cache_read_tokens=500000,
+        ),
+        provider="deepseek",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M input × $0.14/M + 500K output × $0.28/M + 500K cache_read × $0.014/M
+    # = $0.14 + $0.14 + $0.007 = $0.287
+    assert float(result.amount_usd) == 0.287
+
+
+def test_deepseek_v4_flash_estimate_usage_cost_with_cache():
+    """Ensure deepseek-v4-flash sessions with cache hits get a dollar estimate."""
+    result = estimate_usage_cost(
+        "deepseek-v4-flash",
+        CanonicalUsage(
+            input_tokens=1000000,
+            output_tokens=500000,
+            cache_read_tokens=500000,
+        ),
+        provider="deepseek",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # Same pricing as deepseek-chat
+    assert float(result.amount_usd) == 0.287
+
+
 def test_bedrock_claude_rows_all_carry_cache_pricing():
     """Invariant: every Bedrock Claude pricing row must carry cache-read AND
     cache-write rates, otherwise a cached session prices as ``unknown``.
