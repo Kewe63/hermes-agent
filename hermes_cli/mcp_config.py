@@ -773,8 +773,22 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
         _info("Use `hermes mcp remove` + `hermes mcp add` to reconfigure auth.")
         return False
 
-    # Wipe both disk and in-memory cache so the next probe forces a fresh
-    # OAuth flow.
+    # Snapshot before clearing: a re-auth wipes cached state to force a
+    # fresh consent, but if the flow fails we must NOT leave the user
+    # worse off than before — restore the working token on any failure.
+    # The desktop GUI path in hermes_cli/web_server.py already does this
+    # (#60694); mirror it here so a transient keepalive failure during a
+    # CLI re-auth doesn't silently destroy still-valid tokens. If no
+    # tokens existed on disk (fresh login) the snapshot is empty and
+    # ``restore`` is a no-op.
+    try:
+        from tools.mcp_oauth import HermesTokenStorage
+        storage = HermesTokenStorage(name)
+        backup = storage.snapshot()
+    except Exception:
+        storage = None  # type: ignore[assignment]
+        backup = {}
+
     try:
         from tools.mcp_oauth_manager import get_manager
         get_manager().remove(name)
@@ -813,6 +827,14 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
                 "Server responded, but no OAuth token was obtained — "
                 "authentication did not complete."
             )
+            # Restore the previous token set so the keepalive-induced
+            # loss-of-credentials trap (#60694) can't strand the user.
+            if storage is not None:
+                try:
+                    storage.restore(backup)
+                except Exception as exc:
+                    _warning(f"Could not restore previous OAuth state: {exc}")
+            print()
             print()
             _info(
                 "Some providers (e.g. Google Drive, Atlassian) do not support "
@@ -836,6 +858,19 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
             _success("Authenticated (server reported no tools)")
         return True
     except Exception as exc:
+        # Any probe / network / keepalive failure happened mid-flow. The
+        # wipe-tokens-before-probe pattern below would otherwise strand
+        # the user with no credentials on disk and force a manual
+        # browser re-auth even though the previous tokens were still
+        # valid (#60694). Restore the snapshot for every exception path
+        # so a transient hiccup never costs credentials.
+        if storage is not None and backup:
+            try:
+                storage.restore(backup)
+            except Exception as restore_exc:
+                _warning(
+                    f"Could not restore previous OAuth state: {restore_exc}"
+                )
         _error(f"Authentication failed: {exc}")
         return False
 

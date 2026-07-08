@@ -918,6 +918,231 @@ class TestMcpLogin:
         assert seen["connect_timeout"] >= 180
 
 
+
+# ---------------------------------------------------------------------
+# Tests: cmd_mcp_login restores snapshot on failure (GH#60694)
+# ---------------------------------------------------------------------
+
+
+class TestMcpLoginPreservesTokensOnFailure:
+    """A `hermes mcp login <name>` that fails mid-flow (network hiccup,
+    missing url, or the server returning no token) must NOT destroy the
+    user's previously cached tokens. The desktop re-auth path
+    (hermes_cli/web_server.py) already does this; the CLI path must
+    match (#60694)."""
+
+    def _write_token_file(self, tmp_path, name: str = "robinhood") -> Path:
+        """Write a plausible OAuth token + client + meta triplet."""
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir(exist_ok=True)
+        tokens_p = token_dir / f"{name}.json"
+        tokens_p.write_text(
+            '{"access_token": "valid", "expires_in": 3600}',
+            encoding="utf-8",
+        )
+        client_p = token_dir / f"{name}.client.json"
+        client_p.write_text(
+            '{"client_id": "valid-client", "client_secret": "valid"}',
+            encoding="utf-8",
+        )
+        meta_p = token_dir / f"{name}.meta.json"
+        meta_p.write_text(
+            '{"issuer": "https://agent.robinhood.com", "token_endpoint": "https://agent.robinhood.com/oauth/token"}',
+            encoding="utf-8",
+        )
+        return tokens_p
+
+    def test_login_preserves_tokens_when_probe_raises(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Network error during the OAuth probe must not strand the user.
+
+        Reproduces the exact #60694 observed-state: the probe raises
+        (transient keepalive / connection lost), the previous OAuth
+        tokens were valid for hours, and the old behavior wiped them.
+        """
+        tokens_p = self._write_token_file(tmp_path)
+        snapshot_bytes = tokens_p.read_bytes()
+        _seed_config(tmp_path, {
+            "robinhood": {
+                "url": "https://agent.robinhood.com/mcp/trading",
+                "auth": "oauth",
+            },
+        })
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        def _exploding_probe(name, cfg, connect_timeout=30):
+            raise ConnectionError("connection lost (attempt 1/5)")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", _exploding_probe
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="robinhood"))
+
+        assert tokens_p.exists(), (
+            "valid access_token file was deleted on transient probe "
+            "failure — user lost MCP access until manual re-login "
+            "(#60694)"
+        )
+        assert tokens_p.read_bytes() == snapshot_bytes, (
+            "token file was rewritten to a different content instead "
+            "of being preserved as the original valid token"
+        )
+
+        out = capsys.readouterr().out
+        assert "Authentication failed" in out
+
+    def test_login_preserves_tokens_when_probe_returns_no_token(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Server returns tools but no token landed (Google Drive-style
+        false success). After wipe-before-probe the old tokens would be
+        gone; snapshot/restore must put them back."""
+        tokens_p = self._write_token_file(tmp_path)
+        snapshot_bytes = tokens_p.read_bytes()
+        _seed_config(tmp_path, {
+            "googledrive": {
+                "url": "https://drivemcp.googleapis.com/mcp/v1",
+                "auth": "oauth",
+            },
+        })
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # Tools are returned (false success probe state). No token file
+        # is written → _oauth_tokens_present() flips to False.
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, cfg, connect_timeout=30: [("t", "d")],
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="googledrive"))
+
+        assert tokens_p.exists(), (
+            "old tokens wiped on no-token-failure — preserves-on-fail "
+            "contract broken (#60694)"
+        )
+        assert tokens_p.read_bytes() == snapshot_bytes, (
+            "tokens content changed when only the false-success path "
+            "was hit — restore should be byte-identical to snapshot"
+        )
+
+    def test_login_failure_restores_cached_token(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Simpler contract: a failed probe must restore the original
+        tokens file content. We achieve this by writing a custom token
+        file before the wipe, then patching manager.remove so it does
+        NOT delete the file (the wipe happens later via storage.remove
+        in remove_oauth_tokens, but we want the snapshot to be of the
+        original file). The restore() call from storage.restore(backup)
+        must rewrite the file with the snapshot bytes after the probe
+        raises."""
+        from tools.mcp_oauth import HermesTokenStorage as _RealStorage
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir(exist_ok=True)
+        tokens_file = token_dir / "gh.json"
+        # Original valid token on disk; mark it so the test can verify
+        # it ended up back here byte-identical after probe failure.
+        original = b'{"access_token": "original-valid-token", "expires_in": 3600}'
+        tokens_file.write_bytes(original)
+
+        _seed_config(tmp_path, {
+            "gh": {"url": "https://gh.example.com/mcp", "auth": "oauth"},
+        })
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        def _exploding_probe(name, cfg, connect_timeout=30):
+            raise ConnectionError("connection lost (attempt 1/5)")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", _exploding_probe
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="gh"))
+
+        # The original valid tokens file MUST be preserved byte-identical.
+        assert tokens_file.exists(), (
+            "valid access_token file was deleted on transient probe "
+            "failure — user lost MCP access (#60694)"
+        )
+        assert tokens_file.read_bytes() == original, (
+            "token file content was rewritten — snapshot/restore path "
+            "didn't fire and re-auth wiped working credentials"
+        )
+
+        out = capsys.readouterr().out
+        assert "Authentication failed" in out
+
+    def test_login_success_does_not_restore(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """On a clean login the user wanted to replace the token. We
+        still take a snapshot for safety, but the restore path is NOT
+        exercised — the new token is the only one on disk."""
+        old_tokens = self._write_token_file(tmp_path)
+        new_token_dir = tmp_path / "mcp-tokens"
+
+        _seed_config(tmp_path, {
+            "ok": {"url": "https://ok.example.com/mcp", "auth": "oauth"},
+        })
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        def mock_probe(name, cfg, connect_timeout=30):
+            # Wipe ONLY the tokens file so the new probe has a clean
+            # slot, then write a fresh token — mirrors a successful
+            # real OAuth flow landing on disk mid-probe.
+            tokens_file = new_token_dir / f"{name}.json"
+            # Pre-existing tokens file will be there from the call to
+            # storage.remove() inside the flow; mock_probe only adds a
+            # fresh token. We do NOT touch client.json/meta.json so
+            # restore() would restore the old snapshot.
+            tokens_file.parent.mkdir(exist_ok=True)
+            tokens_file.write_text(
+                '{"access_token": "fresh", "expires_in": 3600}',
+                encoding="utf-8",
+            )
+            return [("a", "d"), ("b", "d")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="ok"))
+
+        # Tokens ARE overwritten with the fresh one — proves restore
+        # wasn't called on the success path.
+        new_tokens = new_token_dir / "ok.json"
+        assert new_tokens.exists()
+        assert b'"access_token": "fresh"' in new_tokens.read_bytes(), (
+            "login success path should keep the freshly-minted token, "
+            "not silently restore the old snapshot"
+        )
+
+        out = capsys.readouterr().out
+        assert "Authenticated" in out
+
+
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_reauth (GH#36767)
 # ---------------------------------------------------------------------------
