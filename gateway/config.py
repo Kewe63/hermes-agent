@@ -1738,10 +1738,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
     # SMS (Twilio)
     twilio_sid = getenv("TWILIO_ACCOUNT_SID")
-    if twilio_sid:
-        if Platform.SMS not in config.platforms:
-            config.platforms[Platform.SMS] = PlatformConfig()
-        config.platforms[Platform.SMS].enabled = True
+    twilio_enabled = is_truthy_value(getenv("TWILIO_ENABLED", ""))
+    twilio_disabled_explicitly = getenv("TWILIO_ENABLED", "").lower() in {"false", "0", "no"}
+    if Platform.SMS in config.platforms:
+        # YAML config exists — respect explicit disable / enable
+        sms_cfg = config.platforms[Platform.SMS]
+        if twilio_disabled_explicitly:
+            sms_cfg.enabled = False
+        elif twilio_enabled:
+            sms_cfg.enabled = True
+        elif twilio_sid:
+            sms_cfg.enabled = True
+            sms_cfg.api_key = getenv("TWILIO_AUTH_TOKEN", "")
+        # else: keep whatever the YAML set
+    elif twilio_sid and not twilio_disabled_explicitly:
+        config.platforms[Platform.SMS] = PlatformConfig(enabled=True)
         config.platforms[Platform.SMS].api_key = getenv("TWILIO_AUTH_TOKEN", "")
     sms_home = getenv("SMS_HOME_CHANNEL")
     if sms_home and Platform.SMS in config.platforms:

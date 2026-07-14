@@ -41,17 +41,92 @@ class TestSmsConfigLoading:
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest123",
             "TWILIO_AUTH_TOKEN": "token_abc",
-            "TWILIO_PHONE_NUMBER": "+15551234567",
-            "SMS_HOME_CHANNEL": "+15559876543",
+            "TWILIO_PHONE_NUMBER": "+155****4567",
+            "SMS_HOME_CHANNEL": "+155****6543",
             "SMS_HOME_CHANNEL_NAME": "My Phone",
         }
         with patch.dict(os.environ, env, clear=False):
             config = load_gateway_config()
             hc = config.platforms[Platform.SMS].home_channel
             assert hc is not None
-            assert hc.chat_id == "+15559876543"
+            assert hc.chat_id == "+155****6543"
             assert hc.name == "My Phone"
             assert hc.platform == Platform.SMS
+
+    def test_twilio_enabled_false_prevents_sms_activation(self):
+        """TWILIO_ENABLED=false must prevent SMS from activating even
+        when TWILIO_ACCOUNT_SID is present in the environment.
+
+        Regression test for #64210: a leaked TWILIO_ACCOUNT_SID from a
+        parent shell auto-activated SMS, and the missing
+        TWILIO_PHONE_NUMBER fatal error killed the entire gateway.
+        """
+        from gateway.config import load_gateway_config
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest123",
+            "TWILIO_AUTH_TOKEN": "token_abc",
+            "TWILIO_ENABLED": "false",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = load_gateway_config()
+            assert Platform.SMS not in config.platforms
+
+    def test_twilio_enabled_false_disables_existing_yaml_config(self):
+        """If SMS already exists in YAML, TWILIO_ENABLED=false disables it."""
+        from gateway.config import _apply_env_overrides, GatewayConfig
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest123",
+            "TWILIO_AUTH_TOKEN": "token_abc",
+            "TWILIO_ENABLED": "false",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            base = GatewayConfig()
+            base.platforms[Platform.SMS] = PlatformConfig(enabled=True)
+            _apply_env_overrides(base)
+            assert Platform.SMS in base.platforms
+            assert base.platforms[Platform.SMS].enabled is False
+
+    def test_twilio_enabled_true_activates_sms_without_sid(self):
+        """TWILIO_ENABLED=true alone does NOT activate SMS — SID is still required."""
+        from gateway.config import load_gateway_config
+
+        env = {
+            "TWILIO_ENABLED": "true",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = load_gateway_config()
+            # Without SID, SMS should not be auto-registered
+            assert Platform.SMS not in config.platforms
+
+    def test_twilio_enabled_true_with_sid_activates_sms(self):
+        """TWILIO_ENABLED=true + TWILIO_ACCOUNT_SID activates SMS."""
+        from gateway.config import load_gateway_config
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest123",
+            "TWILIO_AUTH_TOKEN": "token_abc",
+            "TWILIO_ENABLED": "true",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = load_gateway_config()
+            assert Platform.SMS in config.platforms
+            assert config.platforms[Platform.SMS].enabled is True
+
+    def test_twilio_sid_alone_still_activates_sms(self):
+        """Backward compat: TWILIO_ACCOUNT_SID alone (no TWILIO_ENABLED)
+        still activates SMS — the gate is opt-in disable."""
+        from gateway.config import load_gateway_config
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest123",
+            "TWILIO_AUTH_TOKEN": "token_abc",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            config = load_gateway_config()
+            assert Platform.SMS in config.platforms
+            assert config.platforms[Platform.SMS].enabled is True
 
 # ── Format / truncate ───────────────────────────────────────────────
 
