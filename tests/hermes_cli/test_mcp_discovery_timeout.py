@@ -77,19 +77,37 @@ class TestEnvVarOverride:
 class TestHeadlessDefault:
 
     def test_headless_caller_passes_5s(self, monkeypatch):
-        """cli.py headless path must pass timeout=5.0 to wait_for_mcp_discovery."""
+        """cli.py get_tool_definitions headless path must call wait_for_mcp_discovery(timeout=5.0)
+        while a discovery thread is in-flight, proving the real caller is exercised."""
         _reset()
         monkeypatch.delenv("HERMES_MCP_DISCOVERY_WAIT", raising=False)
+
+        # Put an in-flight discovery thread in place so wait_for_mcp_discovery
+        # actually blocks and the timeout value is meaningful.
+        mcp_startup._mcp_discovery_thread = _make_slow_thread(0.05)
+        mcp_startup._mcp_discovery_started = True
+
         received = []
 
         def _fake_wait(timeout=0.75):
             received.append(timeout)
 
+        # Patch on the module that cli.py imports from at call time.
         monkeypatch.setattr(mcp_startup, "wait_for_mcp_discovery", _fake_wait)
 
-        # Simulate what cli.py headless path does
-        mcp_startup.wait_for_mcp_discovery(timeout=5.0)
+        # Also patch model_tools so get_tool_definitions doesn't need the full stack.
+        import types
+        fake_model_tools = types.ModuleType("model_tools")
+        fake_model_tools.get_tool_definitions = lambda *a, **kw: []
+        monkeypatch.setitem(__import__("sys").modules, "model_tools", fake_model_tools)
+
+        import cli
+        # Reload so cli.py picks up the patched sys.modules entry.
+        import importlib
+        importlib.reload(cli)
+
+        cli.get_tool_definitions()
 
         assert received == [5.0], (
-            f"Headless path should pass timeout=5.0, got {received}"
+            f"cli.get_tool_definitions() headless path should pass timeout=5.0, got {received}"
         )
