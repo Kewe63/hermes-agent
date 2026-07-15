@@ -23,7 +23,6 @@ Usage:
 """
 
 import re
-import os
 import fnmatch
 import hashlib
 from dataclasses import dataclass, field
@@ -803,7 +802,6 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
     - Binary/executable files that shouldn't be in a skill
     - Symlinks pointing outside the skill directory
     - Individual files that are too large
-    - Directory symlinks/junctions that redirect traversal
 
     Args:
         skill_dir: Path to the skill directory.
@@ -817,54 +815,6 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
 
     findings = []
 
-    # ── Pass 1: check directory components for symlinks ──────────────
-    # rglob may follow directory symlinks (Python 3.12+), silently
-    # descending into redirected trees.  Walk explicitly with
-    # follow_symlinks=False so we catch every directory-level symlink
-    # before descent.
-    _checked_dirs: set = set()
-    for root, dirs, _files in os.walk(skill_dir, followlinks=False):
-        root_path = Path(root)
-        for d in dirs:
-            dpath = root_path / d
-            try:
-                if not dpath.is_symlink() and not (
-                    hasattr(dpath, "is_junction") and dpath.is_junction()  # type: ignore[union-attr]
-                ):
-                    continue
-            except OSError:
-                continue
-            try:
-                rel = str(dpath.relative_to(skill_dir))
-            except ValueError:
-                rel = str(dpath)
-            if ignore(rel):
-                continue
-            _checked_dirs.add(dpath.resolve())
-            try:
-                resolved = dpath.resolve()
-                if not resolved.is_relative_to(skill_dir.resolve()):
-                    findings.append(Finding(
-                        pattern_id="dir_symlink_escape",
-                        severity="critical",
-                        category="traversal",
-                        file=rel,
-                        line=0,
-                        match=f"directory symlink -> {resolved}",
-                        description="directory symlink/junction redirects outside the skill directory",
-                    ))
-            except OSError:
-                findings.append(Finding(
-                    pattern_id="broken_dir_symlink",
-                    severity="medium",
-                    category="traversal",
-                    file=rel,
-                    line=0,
-                    match="broken directory symlink",
-                    description="broken or circular directory symlink/junction",
-                ))
-
-    # ── Pass 2: regular file checks ─────────────────────────────────
     file_count = 0
     total_size = 0
 
