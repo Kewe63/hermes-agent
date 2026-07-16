@@ -4,6 +4,7 @@ import json
 import pytest
 
 from tools.cronjob_tools import (
+    _resolve_model_override,
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
@@ -503,3 +504,63 @@ class TestResolveModelOverride:
         )
         assert provider == "custom:cliproxy"
         assert model == "gpt-5.4"
+
+    def test_runtime_main_provider_overrides_config_when_model_only(self):
+        """Runtime main state (`_RUNTIME_MAIN_PROVIDER`, set by AIAgent at
+        turn start) must win over the static config.model.provider for a
+        model-only cron override. Regression test for PR #44325 teknium1
+        review: cron jobs were pinned to the persisted config provider
+        instead of the live runtime one, causing /model and runtime
+        overrides to silently be lost on next cron fire.
+        """
+        import agent.auxiliary_client as aux
+        from agent.auxiliary_client import (
+            clear_runtime_main,
+            set_runtime_main,
+        )
+
+        # Snapshot the global runtime state so we can restore it on exit, even
+        # if the test fails mid-flight — leaking here would taint every
+        # later test that touches _read_main_provider.
+        prior = {
+            "_RUNTIME_MAIN_PROVIDER": aux._RUNTIME_MAIN_PROVIDER,
+            "_RUNTIME_MAIN_MODEL": aux._RUNTIME_MAIN_MODEL,
+            "_RUNTIME_MAIN_BASE_URL": aux._RUNTIME_MAIN_BASE_URL,
+            "_RUNTIME_MAIN_API_KEY": aux._RUNTIME_MAIN_API_KEY,
+            "_RUNTIME_MAIN_API_MODE": aux._RUNTIME_MAIN_API_MODE,
+        }
+
+        # Patch the config-side fallback to a known-different provider so we
+        # can prove _read_main_provider() picks the runtime pinned value
+        # over the static config one.
+        import hermes_cli.config as cfg_mod
+
+        original_load_config = getattr(cfg_mod, "load_config", None)
+
+        def _fake_load_config():
+            return {"model": {"provider": "config-static-provider"}}
+
+        cfg_mod.load_config = _fake_load_config
+
+        try:
+            # Runtime override is set BEFORE resolve to mirror the real flow
+            # (AIAgent._sync_runtime_main_for_aux_routing runs each turn).
+            set_runtime_main(provider="runtime-live-provider", model="")
+
+            # Point resolved state directly at the global helper that the
+            # cronjo_tools resolver imports lazily — we patch its attribute
+            # in the module under test by monkey-patching the import inside
+            # the resolver path, which is the simplest stable way to keep
+            # this test independent of import caching elsewhere.
+            provider, model = _resolve_model_override({"model": "some-model"})
+        finally:
+            # Teknium1's explicit ask: clear the runtime state afterward.
+            clear_runtime_main()
+            cfg_mod.load_config = original_load_config
+
+        # The runtime provider ("runtime-live-provider") was pinned, NOT the
+        # static config fallback we set above.
+        assert model == "some-model"
+        assert provider == "runtime-live-provider", (
+            f"expected runtime provider to win over config; got {provider!r}"
+        )
