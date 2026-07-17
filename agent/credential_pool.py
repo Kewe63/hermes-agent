@@ -416,6 +416,62 @@ def list_custom_pool_providers() -> List[str]:
     )
 
 
+def pool_matches_agent(
+    pool_provider: Optional[str],
+    *,
+    agent_provider: Optional[str] = None,
+    agent_base_url: Optional[str] = None,
+    agent_requested_provider: Optional[str] = None,
+) -> bool:
+    """Strict exact-match predicate used at both initialization and recovery.
+
+    The agent's credential pool only mutates when this returns True. The
+    contract is the same regardless of caller so init and recovery can
+    share a single source of truth.
+
+    Returns True only when ``pool_provider`` is a non-empty ``custom:<name>``
+    key AND one of:
+
+    - ``agent_base_url`` resolves to the same ``custom:<name>`` key via
+      :func:`get_custom_provider_pool_key` (the historical match path
+      for a non-relayer custom endpoint), OR
+    - ``agent_requested_provider`` is exactly ``pool_provider`` after
+      normalisation — covers the relayer case (#45715) where the agent's
+      ``base_url`` is a proxy that resolves to NO ``custom_providers``
+      entry, but the user did request that named pool via
+      ``runtime_provider.resolve_runtime_provider``.
+    """
+    if not pool_provider or not isinstance(pool_provider, str):
+        return False
+    pool_norm = pool_provider.strip().lower()
+    if not pool_norm.startswith(CUSTOM_POOL_PREFIX):
+        return False
+
+    # Non-custom providers must match exactly on agent.provider (legacy).
+    if agent_provider:
+        agent_provider_norm = agent_provider.strip().lower()
+        if agent_provider_norm and not agent_provider_norm.startswith("custom"):
+            return agent_provider_norm == pool_norm
+
+    # Bare 'custom' with a base_url match covers the normal case.
+    if agent_base_url:
+        try:
+            resolved = get_custom_provider_pool_key(agent_base_url) or ""
+            if resolved.strip().lower() == pool_norm:
+                return True
+        except Exception:
+            pass
+
+    # Relayer-routed custom: agent.requested_provider carries the named form
+    # resolved upstream. Match it strictly against the pool key.
+    if agent_requested_provider:
+        requested_norm = agent_requested_provider.strip().lower()
+        if requested_norm and requested_norm == pool_norm:
+            return True
+
+    return False
+
+
 def _get_custom_provider_config(pool_key: str) -> Optional[Dict[str, Any]]:
     """Return the custom_providers config entry matching a pool key like 'custom:together.ai'."""
     if not pool_key.startswith(CUSTOM_POOL_PREFIX):

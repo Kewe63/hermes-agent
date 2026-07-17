@@ -1728,6 +1728,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),
+            # Named provider form propagated from runtime_provider resolution
+            # (#45715). Carried onto the agent so the credential-pool guard
+            # can match relayer-routed custom providers.
+            requested_provider=runtime.get("requested_provider"),
             api_mode=runtime.get("api_mode"),
             acp_command=runtime.get("command"),
             acp_args=runtime.get("args"),

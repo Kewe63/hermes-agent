@@ -637,23 +637,25 @@ def recover_with_credential_pool(
         # pool_provider directly. This stays strict: a fallback to a
         # different custom pool leaves requested_provider != pool_provider
         # and the guard still refuses to mutate the wrong pool (#33088/#33163).
+        #
+        # Both the initialization boundary (``init_agent``) and this recovery
+        # guard consult ``agent.credential_pool.pool_matches_agent`` so the
+        # two surfaces share a single strict-exact contract (#45715 review
+        # by teknium1).
         _custom_match = False
-        if current_provider == "custom" and pool_provider.startswith("custom:"):
-            try:
-                from agent.credential_pool import get_custom_provider_pool_key
+        try:
+            from agent.credential_pool import pool_matches_agent
 
-                _agent_base = (getattr(agent, "base_url", "") or "").strip()
-                _agent_requested = (
+            _custom_match = pool_matches_agent(
+                pool_provider,
+                agent_provider=current_provider,
+                agent_base_url=(getattr(agent, "base_url", "") or "").strip(),
+                agent_requested_provider=(
                     getattr(agent, "requested_provider", "") or ""
-                ).strip().lower()
-                _base_url_match = bool(_agent_base) and (
-                    (get_custom_provider_pool_key(_agent_base) or "").strip().lower()
-                    == pool_provider
-                )
-                _named_match = bool(_agent_requested) and _agent_requested == pool_provider
-                _custom_match = _base_url_match or _named_match
-            except Exception:
-                _custom_match = False
+                ).strip().lower(),
+            )
+        except Exception:
+            _custom_match = False
         if not _custom_match:
             _ra().logger.warning(
                 "Credential pool provider mismatch: pool=%s, agent=%s — "

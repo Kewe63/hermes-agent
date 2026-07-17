@@ -314,6 +314,47 @@ def init_agent(
     agent.load_soul_identity = load_soul_identity
     agent.pass_session_id = pass_session_id
     agent._credential_pool = credential_pool
+    # Strict named-custom match guard (#45715). When the caller attaches a
+    # credential_pool whose ``provider`` does not match this agent's
+    # provider identity (bare ``provider``, resolved ``base_url``, or the
+    # original ``requested_provider`` propagated from
+    # ``runtime_provider.resolve_runtime_provider``), we refuse to leave the
+    # pool bound — mutating it under the wrong agent would corrupt the
+    # primary's credential state (#33088/#33163). The same predicate is
+    # used by ``recover_with_credential_pool`` so init and recovery share
+    # one strict contract.
+    if credential_pool is not None:
+        try:
+            from agent.credential_pool import pool_matches_agent
+
+            _bound_provider = getattr(credential_pool, "provider", "") or ""
+            # ``provider_name`` is computed later in this function; recompute
+            # the same lowercased bare form here so the guard doesn't depend
+            # on assignment ordering.
+            _provider_name_local = (
+                provider.strip().lower()
+                if isinstance(provider, str) and provider.strip()
+                else None
+            )
+            if not pool_matches_agent(
+                _bound_provider,
+                agent_provider=_provider_name_local or "",
+                agent_base_url=(base_url or "").strip(),
+                agent_requested_provider=(requested_provider or "").strip().lower(),
+            ):
+                logger.warning(
+                    "Refusing to bind credential pool provider=%r to agent "
+                    "(provider=%r, requested_provider=%r): pool would be "
+                    "mutated under the wrong agent. Dropping the pool "
+                    "reference (#45715/#33088/#33163).",
+                    _bound_provider,
+                    _provider_name_local or "",
+                    (requested_provider or "").strip().lower(),
+                )
+                agent._credential_pool = None
+        except Exception:
+            # Defensive: never let a pool-binding check block agent init.
+            pass
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
