@@ -227,6 +227,23 @@ function Resolve-NpmCmd {
     return $npmExe
 }
 
+# Resolve the current mutable selector (stash@{N}) for an immutable stash
+# object ID. `git stash apply` accepts a raw SHA, but `git stash drop` only
+# accepts a selector, so after capturing a stable SHA we map it back to the
+# live selector at drop time. Mirrors hermes_cli/main.py:_resolve_stash_selector.
+function Resolve-StashSelector {
+    param([string]$StashSha)
+    if (-not $StashSha) { return $null }
+    $list = git -c windows.appendAtomically=false stash list --format='%gd %H' 2>$null
+    foreach ($line in $list) {
+        $parts = $line -split ' ', 2
+        if ($parts.Count -eq 2 -and $parts[1].Trim() -eq $StashSha) {
+            return $parts[0].Trim()
+        }
+    }
+    return $null
+}
+
 function Find-SystemBrowser {
     $candidates = @(
         "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe",
@@ -1211,7 +1228,15 @@ function Install-Repository {
                     # later apply can still target the wrong stash (#46791).
                     # The verify below handles that case.
                     git -c windows.appendAtomically=false stash push --include-untracked -m "$stashName"
-                    if ($LASTEXITCODE -eq 0) { $autostashRef = "stash@{0}" }
+                    if ($LASTEXITCODE -eq 0) {
+                        # Capture the immutable object ID of the stash we just
+                        # created. A mutable selector like `stash@{0}` can shift
+                        # if another `git stash push` happens before we apply/drop,
+                        # silently targeting a different entry (#46791). The SHA
+                        # is stable for the life of the entry, so apply/drop use
+                        # it directly. Mirrors hermes_cli/main.py:6038-6045.
+                        $autostashRef = (git -c windows.appendAtomically=false rev-parse --verify refs/stash 2>$null).Trim()
+                    }
                 }
                 git -c windows.appendAtomically=false fetch origin $Branch
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
@@ -1248,10 +1273,11 @@ function Install-Repository {
                     Write-Info "Capturing post-pull generated-file dirt into $ppdStashName..."
                     git -c windows.appendAtomically=false stash push --include-untracked -m "$ppdStashName" 2>$null
                     if ($LASTEXITCODE -eq 0) {
-                        $postPullDirtRef = "stash@{0}"
-                        # User stash was at stash@{0}; this push bumped it
-                        # to stash@{1}, so update the autostash ref.
-                        $autostashRef = "stash@{1}"
+                        # Immutable object ID of the post-pull dirt stash. No
+                        # selector arithmetic: the user autostash SHA captured
+                        # above is already stable, and this push only adds a NEW
+                        # entry at the top without altering the user stash's ID.
+                        $postPullDirtRef = (git -c windows.appendAtomically=false rev-parse --verify refs/stash 2>$null).Trim()
                     }
                 }
 
@@ -1296,14 +1322,20 @@ function Install-Repository {
                         Write-Info "Restoring local changes..."
                         git -c windows.appendAtomically=false stash apply $autostashRef
                         if ($LASTEXITCODE -eq 0) {
-                            git -c windows.appendAtomically=false stash drop $autostashRef 2>$null
+                            $dropSel = Resolve-StashSelector -StashSha $autostashRef
+                            if ($dropSel) {
+                                git -c windows.appendAtomically=false stash drop $dropSel 2>$null
+                            }
                             # Now restore the post-pull dirt (if any) on top.
                             if ($postPullDirtRef) {
-                                git -c windows.appendAtomically=false rev-parse --verify $postPullDirtRef 2>$null
+                                $ppdStillThere = (git -c windows.appendAtomically=false rev-parse --verify $postPullDirtRef 2>$null)
                                 if ($LASTEXITCODE -eq 0) {
                                     git -c windows.appendAtomically=false stash apply $postPullDirtRef 2>$null
                                     if ($LASTEXITCODE -eq 0) {
-                                        git -c windows.appendAtomically=false stash drop $postPullDirtRef 2>$null
+                                        $dropSel2 = Resolve-StashSelector -StashSha $postPullDirtRef
+                                        if ($dropSel2) {
+                                            git -c windows.appendAtomically=false stash drop $dropSel2 2>$null
+                                        }
                                         Write-Warn "Re-applied generated-file dirt captured after pull."
                                     } else {
                                         Write-Warn "Post-pull dirt could not be re-applied automatically; preserved in stash as $postPullDirtRef"
@@ -1314,6 +1346,14 @@ function Install-Repository {
                             Write-Warn "Review git diff / git status if Hermes behaves unexpectedly."
                         } else {
                             Write-Err "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
+                            # A conflicting `stash apply` can leave conflict markers
+                            # and unmerged paths in the working tree. Reset to a clean
+                            # HEAD while RETAINING the immutable stash reference, so
+                            # the checkout stays runnable and the user's changes are
+                            # recoverable -- parity with the CLI updater's recovery
+                            # path (hermes_cli/main.py:6574-6604).
+                            git -c windows.appendAtomically=false reset --hard HEAD 2>$null
+                            git -c windows.appendAtomically=false clean -fd 2>$null
                             Write-Info "Resolve manually with: git stash apply $autostashRef"
                             # Persist recovery info for the next run (#46791).
                             # Best-effort: a failed marker write must not

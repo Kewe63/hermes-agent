@@ -233,6 +233,21 @@ log_error() {
     echo -e "${RED}✗${NC} $1"
 }
 
+# Resolve the current mutable selector (stash@{N}) for an immutable stash
+# object ID. `git stash apply` accepts a raw SHA, but `git stash drop` only
+# accepts a selector, so after capturing a stable SHA we map it back to the
+# live selector at drop time. Mirrors hermes_cli/main.py:_resolve_stash_selector.
+resolve_stash_selector() {
+    local stash_sha="$1"
+    [ -z "$stash_sha" ] && { echo ""; return; }
+    git stash list --format='%gd %H' 2>/dev/null | while IFS=' ' read -r selector commit; do
+        if [ "$commit" = "$stash_sha" ]; then
+            echo "$selector"
+            return
+        fi
+    done
+}
+
 json_escape() {
     # Enough for short installer status strings; avoids requiring jq during
     # pre-install bootstrap.
@@ -1180,7 +1195,13 @@ clone_repo() {
                 # the exit code explicitly and bail before the checkout if
                 # the push failed.
                 if git stash push --include-untracked -m "$stash_name"; then
-                    autostash_ref="stash@{0}"
+                    # Capture the immutable object ID of the stash we just
+                    # created. A mutable selector like `stash@{0}` can shift if
+                    # another `git stash push` happens before we apply/drop,
+                    # silently targeting a different entry (#46791). The SHA is
+                    # stable for the life of the stash entry, so apply/drop use
+                    # it directly. Mirrors hermes_cli/main.py:6038-6045.
+                    autostash_ref="$(git rev-parse --verify refs/stash)"
                 else
                     log_error "git stash push failed; aborting before checkout to protect local changes."
                     log_info "Resolve manually: cd $INSTALL_DIR && git status && git stash list"
@@ -1210,10 +1231,11 @@ clone_repo() {
                 ppd_stash_name="hermes-install-post-pull-dirt-$(date -u +%Y%m%d-%H%M%S)"
                 log_info "Capturing post-pull generated-file dirt into $ppd_stash_name..."
                 if git stash push --include-untracked -m "$ppd_stash_name" 2>/dev/null; then
-                    post_pull_dirt_ref="stash@{0}"
-                    # User stash was at stash@{0}; this push bumped it to
-                    # stash@{1}, so update the autostash ref accordingly.
-                    autostash_ref="stash@{1}"
+                    # Immutable object ID of the post-pull dirt stash. No
+                    # selector arithmetic: the user autostash SHA captured above
+                    # is already stable, and this push only adds a NEW entry at
+                    # the top of the list without altering the user stash's ID.
+                    post_pull_dirt_ref="$(git rev-parse --verify refs/stash)"
                 fi
             fi
 
@@ -1245,12 +1267,20 @@ clone_repo() {
                 if [ "$restore_now" = "yes" ]; then
                     log_info "Restoring local changes..."
                     if git stash apply "$autostash_ref"; then
-                        git stash drop "$autostash_ref" >/dev/null
+                        local _drop_sel
+                        _drop_sel="$(resolve_stash_selector "$autostash_ref")"
+                        if [ -n "$_drop_sel" ]; then
+                            git stash drop "$_drop_sel" >/dev/null
+                        fi
                         # Now restore the post-pull dirt (if any) on top.
                         if [ -n "$post_pull_dirt_ref" ] && \
                            git rev-parse --verify "$post_pull_dirt_ref" >/dev/null 2>&1; then
                             if git stash apply "$post_pull_dirt_ref" 2>/dev/null; then
-                                git stash drop "$post_pull_dirt_ref" >/dev/null
+                                local _drop_sel2
+                                _drop_sel2="$(resolve_stash_selector "$post_pull_dirt_ref")"
+                                if [ -n "$_drop_sel2" ]; then
+                                    git stash drop "$_drop_sel2" >/dev/null
+                                fi
                                 log_warn "Re-applied generated-file dirt captured after pull."
                             else
                                 log_warn "Post-pull dirt could not be re-applied automatically; preserved in stash as $post_pull_dirt_ref"
@@ -1260,6 +1290,14 @@ clone_repo() {
                         log_warn "Review git diff / git status if Hermes behaves unexpectedly."
                     else
                         log_error "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
+                        # A conflicting `stash apply` can leave conflict markers
+                        # and unmerged paths in the working tree. Reset to a clean
+                        # HEAD while RETAINING the immutable stash reference, so
+                        # the checkout stays runnable and the user's changes are
+                        # recoverable — parity with the CLI updater's recovery
+                        # path (hermes_cli/main.py:6574-6604).
+                        git reset --hard HEAD >/dev/null 2>&1 || true
+                        git clean -fd >/dev/null 2>&1 || true
                         log_info "Resolve manually with: git stash apply $autostash_ref"
                         # Persist recovery info for the next run (#46791).
                         # Best-effort: a failed marker write must not block
@@ -2840,14 +2878,16 @@ main() {
     echo "git" > "$HERMES_HOME/.install_method"
 }
 
-if [ "$MANIFEST_MODE" = true ]; then
-    emit_manifest
-elif [ -n "$STAGE_NAME" ]; then
-    run_stage_protocol "$STAGE_NAME"
-elif [ -n "$ENSURE_DEPS" ]; then
-    ensure_mode
-elif [ "$POSTINSTALL_MODE" = true ]; then
-    postinstall_mode
-else
-    main
+if [ "${BASH_SOURCE[0]}" == "$0" ]; then
+    if [ "$MANIFEST_MODE" = true ]; then
+        emit_manifest
+    elif [ -n "$STAGE_NAME" ]; then
+        run_stage_protocol "$STAGE_NAME"
+    elif [ -n "$ENSURE_DEPS" ]; then
+        ensure_mode
+    elif [ "$POSTINSTALL_MODE" = true ]; then
+        postinstall_mode
+    else
+        main
+    fi
 fi
