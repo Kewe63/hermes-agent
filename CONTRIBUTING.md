@@ -842,7 +842,7 @@ that touches the OS, assume *any* platform can hit your code path.
 
 ### Testing cross-platform
 
-Tests that excercise behavior on specific platforms must run on their target platforms.
+Tests that exercise behavior on specific platforms must run on their target platforms.
 
 ```python
 @pytest.mark.linux_only
