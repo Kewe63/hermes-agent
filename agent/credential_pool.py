@@ -739,7 +739,12 @@ def credential_pool_matches_provider(
     return _legacy_custom_pool_matches(pool_provider, provider_norm, runtime_url)
 
 
-def resolve_runtime_pool_key(provider: Optional[str], base_url: Optional[str]) -> str:
+def resolve_runtime_pool_key(
+    provider: Optional[str],
+    base_url: Optional[str],
+    *,
+    requested_provider: Optional[str] = None,
+) -> str:
     """Resolve the credential-pool key for a runtime provider identity.
 
     Named custom runtimes retain their configured alias while their pool may
@@ -753,13 +758,21 @@ def resolve_runtime_pool_key(provider: Optional[str], base_url: Optional[str]) -
         return ""
 
     def _accepts(candidate: str) -> bool:
-        return credential_pool_matches_provider(candidate, provider_norm, base_url=base_url)
+        return credential_pool_matches_provider(
+            candidate,
+            provider_norm,
+            base_url=base_url,
+            requested_provider=requested_provider,
+        )
 
     try:
         if provider_norm == "custom":
             candidate = get_custom_provider_pool_key(base_url)
             if candidate and _accepts(candidate):
                 return str(candidate).strip().lower()
+            requested_norm = str(requested_provider or "").strip().lower()
+            if requested_norm.startswith(CUSTOM_POOL_PREFIX) and _accepts(requested_norm):
+                return requested_norm
         else:
             # Named/exact custom runtimes are keyed by identity: search the
             # configured candidates by identity before endpoint so a sibling

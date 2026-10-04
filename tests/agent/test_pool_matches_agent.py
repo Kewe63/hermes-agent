@@ -5,12 +5,11 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-import yaml
-
 from agent.credential_pool import (
     CredentialPool,
     PooledCredential,
     credential_pool_matches_provider,
+    resolve_runtime_pool_key,
 )
 from agent.error_classifier import FailoverReason
 
@@ -26,14 +25,18 @@ def custom_config(monkeypatch):
 
     home = Path(get_hermes_home())
     home.mkdir(parents=True, exist_ok=True)
-    (home / "config.yaml").write_text(yaml.safe_dump({
-        "custom_providers": [
-            {"name": "Claude", "base_url": CLAUDE_URL},
-            {"name": "Minimax", "base_url": OTHER_URL},
-        ],
-        "agent": {"skip_background_review": True},
-        "model": {"context_length": 128000},
-    }))
+    (home / "config.yaml").write_text(
+        "custom_providers:\n"
+        "  - name: Claude\n"
+        f"    base_url: {CLAUDE_URL}\n"
+        "  - name: Minimax\n"
+        f"    base_url: {OTHER_URL}\n"
+        "agent:\n"
+        "  skip_background_review: true\n"
+        "model:\n"
+        "  context_length: 128000\n",
+        encoding="utf-8",
+    )
 
 
 def make_pool(base_url=RELAYER_URL):
@@ -85,6 +88,26 @@ def test_relayer_construction_keeps_pool_and_rotates(monkeypatch):
     assert pool.entries()[0].last_status == "exhausted"
 
 
+def test_relayer_pool_survives_fallback_to_next_turn_restore(monkeypatch):
+    pool = make_pool()
+    agent = make_agent(monkeypatch, pool)
+    assert agent._primary_runtime["requested_provider"] == "custom:claude"
+
+    # Model the state left by a cross-provider fallback at the end of a turn.
+    agent._fallback_activated = True
+    agent._provider_fallback_active = True
+    agent.provider = "openrouter"
+    agent.requested_provider = "openrouter"
+    agent.base_url = "https://openrouter.ai/api/v1"
+
+    assert agent._restore_primary_runtime() is True
+    assert agent.provider == "custom"
+    assert agent.requested_provider == "custom:claude"
+    assert agent.base_url == RELAYER_URL
+    assert agent._credential_pool is pool
+    assert agent._credential_pool.provider == "custom:claude"
+
+
 @pytest.mark.parametrize("requested_provider", ["custom:minimax", "", None])
 def test_relayer_construction_drops_unidentified_or_mismatched_pool(monkeypatch, requested_provider):
     pool = make_pool()
@@ -113,6 +136,26 @@ def test_exact_named_relayer_match(requested):
         "custom:claude", "custom", base_url=RELAYER_URL,
         requested_provider=requested,
     )
+
+
+def test_exact_named_relayer_identity_resolves_pool_key():
+    assert resolve_runtime_pool_key(
+        "custom",
+        RELAYER_URL,
+        requested_provider="custom:claude",
+    ) == "custom:claude"
+
+
+@pytest.mark.parametrize("requested,url", [
+    ("custom:minimax", RELAYER_URL),
+    ("custom:claude", OTHER_URL),
+])
+def test_named_identity_does_not_resolve_across_pool_boundaries(requested, url):
+    assert resolve_runtime_pool_key(
+        "custom",
+        url,
+        requested_provider=requested,
+    ) != "custom:claude"
 
 
 @pytest.mark.parametrize("provider,pool,requested,url", [
