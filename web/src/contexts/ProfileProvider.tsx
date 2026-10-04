@@ -5,9 +5,14 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useLocation, useSearchParams } from "react-router-dom";
+import { useLocation, useSearchParams } from "react-router";
 import { api, setManagementProfile } from "@/lib/api";
 import { ProfileContext } from "@/contexts/profile-context";
+import {
+  dashboardInitialProfile,
+  initialProfileScope,
+  shouldAdoptActiveProfile,
+} from "@/lib/profile-bootstrap";
 
 /**
  * Machine-level management-profile scope.
@@ -26,44 +31,49 @@ import { ProfileContext } from "@/contexts/profile-context";
  * truth, the effect below re-asserts `?profile=` onto the new location
  * after each navigation, so the scope survives nav and stays deep-linkable.
  *
- * This exists because "Set as active" on the Profiles page only flips the
- * sticky active_profile file (future CLI/gateway runs) — it cannot retarget
- * the running dashboard. The switcher is the dashboard's own, visible,
- * write-target selector.
+ * This exists because "Set as active" on the Profiles page historically only
+ * flipped the sticky active_profile file (future CLI/gateway runs). The
+ * switcher is the dashboard's write-target selector for Chat and management
+ * pages. We now sync the switcher when the sticky active profile differs from
+ * the dashboard process on load, and ProfilesPage updates the switcher when
+ * you click "Set as active".
  */
 export function ProfileProvider({ children }: { children: ReactNode }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const { pathname } = useLocation();
   const [profiles, setProfiles] = useState<string[]>([]);
   const [currentProfile, setCurrentProfile] = useState("default");
+  const bootstrapProfile = dashboardInitialProfile();
 
-  // Initial value comes from the URL (deep link / refresh / unified-launch
-  // preselect); afterwards state leads and the URL follows.
+  // An explicit URL wins; profile-less deep links inherit the unified-launch
+  // preselection injected by the server. Afterwards state leads and the URL
+  // follows.
   const [profile, setProfileState] = useState(
-    () => searchParams.get("profile") ?? "",
+    () => initialProfileScope(searchParams, bootstrapProfile),
   );
+
+  // A profile param that CHANGED (e.g. the Profiles page's "Manage skills &
+  // tools" linking to /skills?profile=X) is an explicit scope request and
+  // wins over current state. Adopt it during render, before any effect runs,
+  // so the URL sync below never sees the old state next to the new URL and
+  // writes it back.
+  const urlProfile = searchParams.get("profile");
+  const [seenUrlProfile, setSeenUrlProfile] = useState(urlProfile);
+  if (urlProfile !== seenUrlProfile) {
+    setSeenUrlProfile(urlProfile);
+    if (urlProfile !== null && urlProfile !== profile) {
+      setProfileState(urlProfile);
+    }
+  }
 
   // Mirror into the api module synchronously on every render where it
   // changed, so fetches fired by child effects in the same commit see it.
   setManagementProfile(profile);
 
-  // A profile param arriving via in-app navigation (e.g. the Profiles
-  // page's "Manage skills & tools" linking to /skills?profile=X) must win
-  // over current state — it's an explicit scope request.
-  const urlProfile = searchParams.get("profile");
+  // Re-assert ?profile= after navigations that dropped it (bare nav links)
+  // and after state-only changes. No-ops when already in sync.
   useEffect(() => {
-    if (urlProfile !== null && urlProfile !== profile) {
-      setManagementProfile(urlProfile);
-      setProfileState(urlProfile);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlProfile]);
-
-  // Re-assert ?profile= after navigations that dropped it (bare nav links).
-  // Runs on every pathname/profile change; no-ops when already in sync.
-  useEffect(() => {
-    const inUrl = searchParams.get("profile") ?? "";
-    if ((profile || "") === inUrl) return;
+    if ((profile || "") === (urlProfile ?? "")) return;
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
@@ -74,17 +84,43 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
       { replace: true },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathname, profile]);
+  }, [pathname, urlProfile, profile]);
 
   useEffect(() => {
-    api
-      .getProfiles()
-      .then((res) => setProfiles(res.profiles.map((p) => p.name)))
+    let cancelled = false;
+    const urlProfile = searchParams.get("profile");
+
+    Promise.all([api.getProfiles(), api.getActiveProfile()])
+      .then(([profilesRes, info]) => {
+        if (cancelled) return;
+
+        setProfiles(profilesRes.profiles.map((p) => p.name));
+
+        const current = info.current || "default";
+        const active = info.active || "default";
+        setCurrentProfile(current);
+
+        // Explicit URL and unified-launch bootstrap scopes win. Without
+        // either, align the switcher with the sticky active profile so Chat
+        // and management pages match what Profiles shows as "active".
+        if (
+          shouldAdoptActiveProfile(
+            urlProfile,
+            bootstrapProfile,
+            current,
+            active,
+          )
+        ) {
+          setManagementProfile(active);
+          setProfileState(active);
+        }
+      })
       .catch(() => {});
-    api
-      .getActiveProfile()
-      .then((info) => setCurrentProfile(info.current || "default"))
-      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const setProfile = useCallback(
