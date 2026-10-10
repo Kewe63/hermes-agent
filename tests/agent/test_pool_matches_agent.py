@@ -8,9 +8,8 @@ import pytest
 from agent.credential_pool import (
     CredentialPool,
     PooledCredential,
-    credential_pool_matches_provider,
-    resolve_runtime_pool_key,
 )
+from agent.credential_pool_identity import credential_pool_matches_provider, resolve_runtime_pool_key
 from agent.error_classifier import FailoverReason
 
 RELAYER_URL = "https://relayer.example/v1"
